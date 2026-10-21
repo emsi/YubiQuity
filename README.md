@@ -1,0 +1,309 @@
+# YubiQuity
+
+A software-backed FIDO2 authenticator for Linux, intended to work through the
+normal external security-key path in unmodified Firefox and Chromium browsers.
+It is a testing tool, not hardware-backed key protection or a manufacturer-attested
+YubiKey. See the [full plan](firefox-virtual-fido2-plan.md) and
+[implementation ledger](docs/implementation-status.md).
+
+## Current status
+
+The development authenticator creates independent ES256 credentials, supports
+allow-list and discoverable login, multiple accounts, terminal approval, and
+ClientPIN protocol 1. Firefox 158.0.1 registration and login have passed through
+real UHID/hidraw, including a discoverable credential with user verification
+required and the browser's normal PIN dialog. Signatures are independently
+verified by the local test RP and Python FIDO client.
+
+Persistent operation now uses an encrypted Argon2id/XChaCha20-Poly1305 vault,
+exclusive locking and atomic writes. Firefox has reused a saved passkey after a
+daemon crash/restart and a fresh browser profile, with PIN verification required.
+`init`, `run`, `list`, and exact-ID `delete` commands are implemented.
+
+The optional local service starts locked. Its same-user control client can unlock,
+inspect a pending request, explicitly approve/deny it, or lock/detach again.
+
+**This is still under development, not a completed release.** Deployment and full
+cross-browser/release validation remain unfinished. Chrome 155.0.8059.84 currently
+exits with “No usable sandbox” in this container; Chrome compatibility is not yet
+verified. Use disposable test accounts.
+
+The separate `probe` command deliberately provides only transport and GetInfo,
+without advertising credentials or PIN. No mode advertises built-in biometric UV
+or trusted manufacturer attestation.
+
+## Build and check
+
+```bash
+bash scripts/install-dev-tools.sh
+cargo build --locked
+cargo fmt --all -- --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --all-targets --locked
+```
+
+Rust 1.99.1 is pinned in `rust-toolchain.toml`; dependencies are in `Cargo.lock`.
+Protocol unit tests require no kernel device or elevated privileges.
+
+### CI, dependency audit and parser fuzzing
+
+The [CI workflow](.github/workflows/checks.yml) runs formatting, lint, unit tests,
+the independent RP/vault verifiers, both dependency audits, and bounded ASan
+fuzz campaigns. It does **not** silently treat missing UHID/browser permissions
+as a passed interoperability test. Real-device/browser commands below remain
+separate release gates. The workflow is checked in; a hosted CI run is not yet
+recorded for this repository.
+
+```bash
+cargo install cargo-audit --version 0.22.2 --locked
+cargo audit
+cargo audit --file fuzz/Cargo.lock
+rustup toolchain install nightly-2026-10-19 --profile minimal
+cargo install cargo-fuzz --version 0.13.2 --locked
+/usr/bin/python3 scripts/fuzz.py --seconds 120
+```
+
+Fuzzing uses a separate pinned nightly compiler; normal builds still use stable
+1.99.1. See the [cargo-fuzz documentation](https://rust-fuzz.github.io/book/cargo-fuzz/setup.html).
+The four targets cover CBOR parsing/canonicalization, stateful CTAPHID framing
+and recovery, CTAP/PIN command parsing with disposable resident credentials,
+and bounded local-control JSON request parsing.
+The HID target also checks that cancelled/resynchronized/completed transaction
+IDs cannot accept late results. Each target uses ASan, overflow/debug assertions,
+bounded input length, a five-second per-input timeout and a 1-GiB RSS limit.
+No device, root access, browser, network listener, or real secret is used by the
+targets. Source seeds are in `scripts/fuzz.py`; generated corpora are retained
+under `target/fuzz-corpus/`, and logs/reproducers under `target/fuzz-results/`.
+Use `--target cbor|hid|ctap|control` to select one, or a longer `--seconds` for a campaign.
+Short clean runs and an advisory-free lockfile are checks, not proof of security.
+
+## Run with an encrypted vault
+
+Use a dedicated private directory. `init` can create its immediate parent with
+mode `0700`; it never overwrites an existing vault. All higher parents must already
+exist and must not be untrusted writable directories or symlinks.
+
+```bash
+cargo build --release --locked
+target/release/yubiquity init --vault ./test-vault/credentials.yq
+target/release/yubiquity run --vault ./test-vault/credentials.yq --node-helper scripts/container-hidraw.py
+```
+
+The vault passphrase is read from the terminal without echo, before device
+attachment. It is separate from the browser's security-key PIN. Persistent `run`
+always uses explicit terminal approval: type `approve TOKEN` or `deny TOKEN` for
+the displayed request. Type `lock` or `quit`, or press Ctrl-C, to detach and release
+the vault. Restart with `run` to unlock it again. There is no automatic approval
+switch for persistent operation.
+
+Stop the daemon before listing or deleting credentials; all commands take the
+same exclusive vault lock. Metadata is JSON, with account names hidden by default.
+
+```bash
+target/release/yubiquity list --vault ./test-vault/credentials.yq
+target/release/yubiquity list --vault ./test-vault/credentials.yq --show-users
+# Substitute one full 64-character hex ID from the listing; deletion is permanent:
+target/release/yubiquity delete --vault ./test-vault/credentials.yq --credential-id FULL_HEX_ID --confirm
+```
+
+Explicit automation may supply a passphrase through an inherited descriptor
+`--passphrase-fd N` (N >= 3). No password argument, environment variable, or plaintext
+passphrase-file option is provided. See [vault format and operation](docs/vault.md)
+for filesystem requirements, retry durability, failure behavior and limitations.
+
+## Optional local service and approval client
+
+Foreground `run` remains available unchanged. `serve` instead starts **locked**:
+no device is attached until an explicit unlock succeeds. Its control endpoint is
+a filesystem Unix socket, not a TCP listener. The parent must already be owned by
+you with mode `0700`; the socket is mode `0600`, with same-UID peer checks on both
+ends and a separate lifetime lock. Symlinks/unsafe ancestors are rejected using
+the same path checks as the vault.
+
+For a direct development run (two terminals), use private temporary runtime state:
+
+```bash
+yubiquity_runtime=$(mktemp -d /tmp/yubiquity-runtime.XXXXXXXX)
+target/debug/yubiquity serve --vault ./test-vault/credentials.yq \
+  --socket "$yubiquity_runtime/control.sock" --node-helper scripts/container-hidraw.py
+```
+
+In the other terminal, substitute the exact socket path above:
+
+```bash
+yubiquity_socket=/tmp/yubiquity-runtime.REPLACE/control.sock
+target/debug/yubiquity control --socket "$yubiquity_socket" unlock
+target/debug/yubiquity control --socket "$yubiquity_socket" status
+target/debug/yubiquity control --socket "$yubiquity_socket" approve REQUEST_TOKEN
+# Or: ... deny REQUEST_TOKEN
+target/debug/yubiquity control --socket "$yubiquity_socket" lock
+```
+
+`unlock` prompts without echo; explicit automation may supply `--passphrase-fd`
+(>=3), never a password argument/environment variable. `status` intentionally
+shows the pending RP/account description and one-request token; it never returns
+private keys, PINs, PIN tokens or the vault passphrase. JSON escapes untrusted
+display text. Approvals acknowledge acceptance of that decision, not successful
+completion of a browser ceremony. An unmatched, expired or cancelled token fails.
+`lock` acknowledges only after detach and worker cleanup, releases the vault
+writer lock, and invalidates PIN tokens; the service stays running but locked.
+
+Service clients are one-shot commands. **Disconnecting a client does not lock the
+service**: explicitly lock it or stop the service when finished. No client/no
+approval means presence requests time out; there is no persistent auto-approval
+mode. A crash/restart always starts locked and requires a new unlock. Stale owned
+sockets are recovered under the lifetime lock; unrelated files/live sockets are
+not removed. Approval descriptions/tokens are not printed in service logs.
+
+The wire format is internal: one big-endian four-byte length plus a JSON request
+or response, up to 8192 bytes, one request per connection. At most eight clients
+are retained, with a five-second lifetime. Nonblocking I/O keeps slow/malformed
+clients out of the HID loop. A control timeout can leave an operation's result
+unknown: query status rather than assuming unlock/lock failed. Any process with
+your UID can request approval/unlock operations; this is **not** protection from
+a compromised local account or root. Passphrase buffers are cleared where
+practical, not a claim that every library/kernel copy can be erased.
+
+### User-unit installation (normal Linux host)
+
+First arrange the scoped host permissions in [device setup](docs/container-uhid.md).
+The service uses no sudo helper and `NoNewPrivileges=yes`; the development
+container helper is not suitable for this unit. Initialize the intended vault
+interactively, and review existing destination files before replacing an older
+installation:
+
+```bash
+cargo build --release --locked
+install -d -m 0700 "$HOME/.local/bin" "$HOME/.config/systemd/user"
+install -m 0755 target/release/yubiquity "$HOME/.local/bin/yubiquity"
+install -d -m 0700 "$HOME/.local/share/yubiquity/vault"
+"$HOME/.local/bin/yubiquity" init --vault "$HOME/.local/share/yubiquity/vault/credentials.yq"
+install -m 0644 packaging/systemd/yubiquity.service "$HOME/.config/systemd/user/yubiquity.service"
+systemctl --user daemon-reload
+systemctl --user enable --now yubiquity.service
+"$HOME/.local/bin/yubiquity" control --socket "$XDG_RUNTIME_DIR/yubiquity/control.sock" unlock
+```
+
+Use the same socket for `status`, `approve TOKEN`, `deny TOKEN`, and `lock`.
+`systemctl --user stop yubiquity` detaches and clears unlocked state;
+`systemctl --user disable --now yubiquity` also disables future automatic startup.
+Enabling starts only the **locked** service, not an unlocked authenticator.
+No passphrase file or systemd credential is installed. Runtime directory creation
+and cleanup belong to the user manager. Actual systemd-user execution is still
+unverified in this container, where systemd is not running; direct `serve` is
+covered by real-device tests. See [test report](docs/test-report.md).
+
+## Run the temporary authenticator
+
+```bash
+cargo run --locked -- dev-run --node-helper scripts/container-hidraw.py
+```
+
+Omit `--node-helper` on a host with appropriate device-access rules. The daemon
+prints `APPROVAL <token> ...` for each request needing presence. Type
+`approve <token>` or `deny <token>` for that exact request; old tokens are ignored.
+`lock`, `quit`, or Ctrl-C cancels work and detaches. In this temporary mode,
+detaching also discards all credentials and the PIN. Do not enroll real accounts.
+
+For automated disposable tests only, `--test-presence approve` explicitly bypasses
+manual approval. It does not prove actual user presence and is never an implicit
+default. The persistent `run` command does not expose this switch.
+
+## Run the transport probe
+
+On a Linux desktop with device access already configured:
+
+```bash
+cargo run --locked -- probe
+```
+
+In this development container:
+
+```bash
+cargo run --locked -- probe --node-helper scripts/container-hidraw.py
+```
+
+The daemon runs as your normal user. The explicit `--node-helper` option invokes
+`sudo -n` only for a narrowly scoped development helper. It matches this daemon's
+random device identity, creates its hidraw node if absent, assigns it to the
+calling user, and removes only its own node when the daemon exits or crashes.
+It never changes permissions of pre-existing nodes. This helper assumes a trusted
+development user with sudo; it is not a privilege-separation boundary for untrusted
+users and must not be installed setuid.
+
+The probe prints `READY /dev/hidrawN ...`. In another terminal:
+
+```bash
+fido2-token -L
+# Use the exact path printed by the probe:
+fido2-token -I /dev/hidrawN
+```
+
+Ctrl-C detaches; `--exit-after 10` is available for timed tests. No credential or
+vault files are created by the probe. Host/container permissions and the hidraw
+cgroup rule are described in [container setup](docs/container-uhid.md).
+
+## Independent real-device tests
+
+```bash
+cargo build --locked
+/usr/bin/python3 -m unittest discover -s tests -p '*integration.py' -v
+/usr/bin/python3 tests/vault_crypto.py
+```
+
+These tests need Ubuntu's `python3-fido2`, `fido2-tools`, `/dev/uhid`, hidraw cgroup
+access and passwordless sudo for the development helper. They attach temporary
+devices, check independent client discovery and protocol responses, and verify
+normal/crash cleanup. They do not use browser virtual-authenticator APIs or modify
+browser security settings.
+
+The vault crypto check uses independent Argon2 and libsodium Python bindings.
+Each storage test owns a private temporary vault, and failure tests include real
+OS write failures. Test daemons are serialized across runners in this workspace
+because browser discovery can otherwise select another test's FIDO device.
+
+## Browser tests
+
+```bash
+/usr/bin/python3 tests/browser/test_rp.py
+/usr/bin/python3 tests/browser/ceremonies.py --browser firefox
+/usr/bin/python3 tests/browser/ceremonies.py --browser firefox --pin-test
+/usr/bin/python3 tests/browser/ceremonies.py --browser firefox --pin-test --attach-after-start
+/usr/bin/python3 tests/browser/persistence.py --browser firefox
+/usr/bin/python3 tests/browser/service.py
+/usr/bin/python3 tests/browser/accounts.py
+# Required cross-browser gate; currently fails at Chrome sandbox startup here:
+/usr/bin/python3 tests/browser/ceremonies.py --browser both
+```
+
+The test fixture binds only to localhost. It checks one-use challenges, exact
+origin, RP hash, presence/verification flags, signatures, credential IDs and user
+handles. Tests use real WebAuthn and real hidraw, with no browser-internal virtual
+authenticator. The ceremony tests explicitly use scripted presence and disposable
+in-memory state. The persistence test instead drives the normal terminal approval
+path with a disposable encrypted vault, kills the daemon, then verifies login
+through new daemon/browser instances against the same RP registration.
+`service.py` exercises the locked service with explicit CLI approvals, locks and
+re-unlocks it, then verifies saved-credential login in a fresh Firefox profile.
+
+`--pin-test` configures the public test PIN `1234` using an independent FIDO client,
+then exercises the browser's real PIN-entry flow. It starts a separate Xvfb display
+and types only after detecting the PIN dialog. WebDriver can identify Firefox's
+password dialog but cannot fill it; `xdotool` supplies keyboard input on that
+test-owned display. No input is sent to your desktop. `--headed` also uses an
+isolated display; its `/tmp/.X11-unix` directory needs normal writable/sticky
+permissions (conventionally root-owned `1777`).
+
+`accounts.py` registers two residents at one RP, checks each allow list, then
+selects each account from Firefox's ordinary popup using native keyboard/mouse UI.
+The RP must verify the selected user handle, credential ID and UV flag. This
+UI automation is Firefox-specific; it does not change authenticator behavior
+and is not evidence of Chromium's still-unverified selection flow. The menu click
+coordinates match the tested en-US Firefox 158 layout on the isolated display;
+a different layout may need a harness update. Screenshots retain that evidence.
+
+Logs, verified ceremony records, and PIN-dialog screenshots are retained under
+`target/browser-results/`. The installed browsers are Firefox 158.0.1 and Chrome
+for Testing 155.0.8059.84, with geckodriver 0.37.1 and matching ChromeDriver, under
+`~/.local/share/yubiquity/browsers`. Existing installations/profiles are untouched.
+See the [test report](docs/test-report.md) for verified scope and remaining gates.

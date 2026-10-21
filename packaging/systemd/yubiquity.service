@@ -1,0 +1,19 @@
+[Unit]
+Description=YubiQuity software FIDO2 authenticator (starts locked)
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/yubiquity serve --vault %h/.local/share/yubiquity/vault/credentials.yq --socket %t/yubiquity/control.sock
+RuntimeDirectory=yubiquity
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+LimitCORE=0
+StandardInput=null
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=5s
+
+[Install]
+WantedBy=default.target

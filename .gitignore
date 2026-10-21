@@ -1,0 +1,12 @@
+/target/
+__pycache__/
+*.pyc
+/.venv/
+/test-results/
+*.yq
+.*.yq.lock
+.yubiquity-write-*
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/
+/fuzz/coverage/

@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>YubiQuity local WebAuthn verification</title>
+<h1>Local WebAuthn verification</h1>
+<p>Uses the browser's normal external security-key path. No virtual authenticator API.</p>
+<button id="register">Register</button>
+<button id="authenticate">Authenticate</button>
+<pre id="result"></pre>
+<script>
+const from64 = value => Uint8Array.from(atob(value.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4-value.length%4)%4)), ch => ch.charCodeAt(0));
+const to64 = value => btoa(String.fromCharCode(...new Uint8Array(value))).replaceAll('+','-').replaceAll('/','_').replaceAll('=','');
+window.settings = {username: 'alice', resident: false, discoverable: false, uv: 'discouraged'};
+window.result = null;
+async function post(path, body) {
+    const response = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const value = await response.json();
+    if (!response.ok) throw new Error(value.error);
+    return value;
+}
+async function ceremony(kind) {
+    window.result = null;
+    try {
+        const pending = await post('/'+kind+'/options', window.settings);
+        const options = pending.options.publicKey;
+        options.challenge = from64(options.challenge);
+        options.timeout = 30000;
+        for (const field of ['excludeCredentials','allowCredentials']) {
+            if (options[field]) for (const credential of options[field]) credential.id = from64(credential.id);
+        }
+        let credential;
+        if (kind === 'register') {
+            options.user.id = from64(options.user.id);
+            credential = await navigator.credentials.create({publicKey: options});
+        } else credential = await navigator.credentials.get({publicKey: options});
+        const body = {requestId: pending.requestId, rawId: to64(credential.rawId), clientDataJSON: to64(credential.response.clientDataJSON)};
+        for (const field of ['attestationObject','authenticatorData','signature','userHandle']) {
+            if (credential.response[field] != null) body[field] = to64(credential.response[field]);
+        }
+        window.result = await post('/'+kind+'/complete', body);
+    } catch (error) {
+        window.result = {ok:false, name:error.name, error:error.message};
+    }
+    document.getElementById('result').textContent = JSON.stringify(window.result, null, 2);
+}
+document.getElementById('register').onclick = () => ceremony('register');
+document.getElementById('authenticate').onclick = () => ceremony('authenticate');
+</script>

@@ -1,0 +1,46 @@
+[package]
+name = "yubiquity-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+ciborium = "0.2.2"
+libfuzzer-sys = "0.4"
+serde_json = "1.0"
+yubiquity = { path = ".." }
+
+# Keep sanitizer-only dependencies and build flags out of production builds.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "cbor"
+path = "fuzz_targets/cbor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hid"
+path = "fuzz_targets/hid.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ctap"
+path = "fuzz_targets/ctap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "control"
+path = "fuzz_targets/control.rs"
+test = false
+doc = false
+bench = false
