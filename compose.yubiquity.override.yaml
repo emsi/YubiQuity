@@ -1,0 +1,31 @@
+# Docker Compose >= 2.24.4; pass this AFTER your existing Compose file(s).
+# On the Docker host, from the YubiQuity repository:
+#   export YUBIQUITY_SECCOMP="$(realpath packaging/docker/chrome-seccomp.json)"
+# Preserve the existing Compose project name, image, user, entrypoint and volumes.
+services:
+  codex:
+    privileged: false
+
+    # Replace, rather than append to, an old seccomp/no-new-privileges setting.
+    # This uses the current container's docker-default AppArmor policy. If your
+    # base file specifies another intentional security policy, review it first.
+    security_opt: !override
+      # Required by the existing sudo-based dynamic hidraw node helper.
+      - "no-new-privileges:false"
+      - "apparmor=docker-default"
+      - "seccomp=${YUBIQUITY_SECCOMP:?Set YUBIQUITY_SECCOMP to the absolute HOST path of packaging/docker/chrome-seccomp.json}"
+
+    # Replace these lists to avoid duplicate entries when the base already has
+    # UHID/hidraw configured. Add any other intentionally needed devices here.
+    devices: !override
+      - "/dev/uhid:/dev/uhid:rw"
+    device_cgroup_rules: !override
+      # 234 is the hidraw major verified on this host; minors are dynamic.
+      - "c 234:* rwm"
+
+    # A larger private /dev/shm, not access to the host IPC namespace.
+    ipc: private
+    shm_size: "1g"
+
+    # No cap_add, host namespaces, Docker socket or browser sandbox overrides.
+    # Keep Docker's normal capabilities (the node helper needs MKNOD/CHOWN).

@@ -130,6 +130,60 @@ The user has offered to recreate the container with a supplied policy. This does
 not authorize the agent to access the host. The ready-to-use file is
 [packaging/docker/chrome-seccomp.json](../packaging/docker/chrome-seccomp.json).
 
+#### Docker Compose override
+
+[compose.yubiquity.override.yaml](../compose.yubiquity.override.yaml) supplies the
+`codex` service settings: UHID, dynamic hidraw major 234, the seccomp profile,
+`docker-default` AppArmor, `privileged: false`, and a private 1-GiB `/dev/shm`.
+It adds no Linux capabilities and leaves the base image, startup user, entrypoint,
+network and volumes unchanged. Keep Docker's normal capabilities; the existing
+root node helper needs `MKNOD` and `CHOWN`.
+
+Use Compose **2.24.4 or newer**. The `security_opt: !override` tag replaces the
+base list instead of accidentally retaining a conflicting seccomp or
+`no-new-privileges` option. Device mappings and device-cgroup rules also replace
+their base lists, avoiding duplicate UHID/hidraw entries rejected by Compose.
+If your base uses additional intentional security options or devices,
+review/preserve them in these lists rather than dropping them unnoticed.
+[Compose merge rules](https://docs.docker.com/reference/compose-file/merge/#replace-value).
+
+`no-new-privileges` is deliberately **false** for this development container:
+the scoped dynamic-node helper and development package installation use `sudo`.
+Setting it true prevents sudo from becoming root; this was reproduced with
+`setpriv --no-new-privs sudo -n true`. Chrome still runs as the non-root user with
+its own sandbox. Enabling container-wide no-new-privileges would require a
+different privileged device-node provisioning arrangement, not just a YAML edit.
+The optional host systemd service is a separate deployment and can retain its
+`NoNewPrivileges=yes` because it does not invoke the sudo helper.
+
+From the repository root on the Docker host, replace the base-file placeholder
+below with your existing Compose file. Preserve any existing project name (`-p`),
+`--project-directory`, `--env-file`, and additional base `-f` arguments; append
+this override last so you update the existing project, not create a different one:
+
+```bash
+export YUBIQUITY_SECCOMP="$(realpath packaging/docker/chrome-seccomp.json)"
+docker compose -f /path/to/your/compose.yaml \
+  -f "$PWD/compose.yubiquity.override.yaml" config
+docker compose -f /path/to/your/compose.yaml \
+  -f "$PWD/compose.yubiquity.override.yaml" up -d --force-recreate --no-deps codex
+```
+
+The environment variable is intentionally required and should contain an absolute
+host path, avoiding ambiguity when the base Compose file is in another directory.
+Review `config` locally; it may contain resolved secrets from your existing base
+configuration, so do not publish its full output. Preserve volumes and needed
+writable-layer data before recreation. The post-recreation checks below apply
+equally to Compose and `docker run`.
+
+Offline validation with Compose 2.40.3 passes: an existing conflicting security
+list and duplicate UHID/hidraw settings are replaced correctly, base identity and
+volumes survive, and an unset profile variable fails before creation. These two
+merge checks run alongside the three profile-integrity checks in
+`tests/container_seccomp.py`. No Docker Engine was installed or contacted.
+
+#### Existing docker run launcher
+
 From this repository's root **on the Docker client/host**, resolve the file:
 
 ```bash

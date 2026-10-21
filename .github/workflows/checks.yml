@@ -18,7 +18,7 @@ jobs:
       - name: Install independent verifiers
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-fido2 python3-cryptography python3-argon2 python3-nacl udev
+          sudo apt-get install -y --no-install-recommends python3-fido2 python3-cryptography python3-argon2 python3-nacl udev docker-compose-v2
           rustup show active-toolchain
       - name: Format, lint and test
         run: |
