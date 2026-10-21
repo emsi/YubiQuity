@@ -14,6 +14,12 @@ reuse are deferred, not passed; host systemd/udev deployment remains unverified
 and outside the authorized execution scope. The protocol implementation remains
 browser-independent. See the [sandbox research](container-uhid.md#chrome-sandbox-research-and-current-decision).
 
+The user subsequently offered to recreate the container with a supplied policy.
+[Exact launch instructions and profile](container-uhid.md#applying-the-chrome-seccomp-profile)
+are now provided for that retry, with no added container capabilities or agent
+host access. Three offline profile-integrity checks pass; runtime loading,
+sandbox status and Chrome/WebAuthn remain unverified until recreation.
+
 Git author configuration is resolved. The implementation and follow-up tests
 were committed as `e562c25` and `1ad38b7`; the working tree was clean afterward.
 

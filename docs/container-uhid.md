@@ -124,12 +124,112 @@ Verified in this container on 2026-10-20:
 - Separately installed Firefox ESR 153.5.1esr also passes basic/resident/PIN, account selection, persistence/service and negative/recovery scenarios with the same daemon. Its namespace probe reports the same warning. See the [browser/package matrix](test-report.md#browserpackage-matrix).
 - Chrome for Testing and matching ChromeDriver 155.0.8059.84 are installed. Chrome refuses to launch under the current container policy with “No usable sandbox.”
 
+### Applying the Chrome seccomp profile
+
+The user has offered to recreate the container with a supplied policy. This does
+not authorize the agent to access the host. The ready-to-use file is
+[packaging/docker/chrome-seccomp.json](../packaging/docker/chrome-seccomp.json).
+
+From this repository's root **on the Docker client/host**, resolve the file:
+
+```bash
+export YUBIQUITY_SECCOMP="$(realpath packaging/docker/chrome-seccomp.json)"
+test -r "$YUBIQUITY_SECCOMP"
+```
+
+Add the following single argument to the existing `docker run` in the launcher,
+before its image name. The exported variable must be available in that launcher:
+
+```bash
+--security-opt "seccomp=$YUBIQUITY_SECCOMP"
+```
+
+Keep the existing device arguments; major 234 was observed on this host:
+
+```bash
+--device=/dev/uhid:/dev/uhid:rw \
+--device-cgroup-rule='c 234:* rwm'
+```
+
+This profile does not add Linux capabilities. Keep the existing capability set,
+AppArmor profile, user, network/IPC isolation, volumes and workspace mounts.
+Do not add `--privileged`, `--cap-add=SYS_ADMIN`, `--ipc=host`, unconfined security
+profiles or a Docker socket mount. Do not change the image's startup user just
+for this flag: the existing entrypoint may need root, but Chrome itself must run
+as the normal development user, not under `sudo`.
+
+Recreate the container using the amended launcher; `docker restart` retains the
+old configuration. Preserve home/workspace volumes and any other needed data in
+the old writable layer. Do not delete volumes. The JSON path is read by the
+Docker client at creation time and does not need a separate container mount.
+
+After recreation, run this **inside the container as the development user**:
+
+```bash
+id
+unshare --user --map-root-user true
+unshare --user --map-root-user --pid --net --fork true
+```
+
+Both namespace commands should exit 0. They are prerequisites, not proof that
+Chrome or WebAuthn works. Development packages may need reinstalling after
+recreation. The existing integration command for the subsequent real-device test
+is:
+
+```bash
+/usr/bin/python3 tests/browser/ceremonies.py --browser chrome --headed --attach-after-start
+```
+
+The agent will run that test, inspect sandbox status and continue the PIN,
+persistence and cross-browser tests after reconnection; no `--no-sandbox` flag or
+browser patch is used. Leave existing browser binaries/profiles alone.
+
+If namespace creation still returns `EPERM`, do not add broad privileges. On the
+host, inspect recent kernel audit messages immediately after reproducing it:
+
+```bash
+sudo journalctl -k --since "10 minutes ago" --no-pager | grep -Ei 'apparmor.*(userns|namespace)'
+```
+
+An AppArmor `DENIED` record for `userns_create` and the container's profile would
+identify an additional restriction. Report that record and the namespace command
+output; the next change would be a profile-specific allowance, not disabling
+AppArmor or changing a global sysctl. Absence of an audit message does not prove
+AppArmor is uninvolved. No AppArmor change is part of this first attempt.
+
+#### Policy provenance and limits
+
+The file is the official Moby profiles `seccomp/v0.2.4` default at commit
+[`245180c51918481c0525424b3ee025d2b435d46c`](https://github.com/moby/profiles/blob/245180c51918481c0525424b3ee025d2b435d46c/seccomp/default.json),
+with one extra allow rule for `clone`, `setns` and `unshare`, following
+[Playwright's sandboxed-container recipe](https://playwright.dev/docs/docker#crawling-and-scraping).
+Default-deny and every upstream rule, including the `clone3` ENOSYS fallback,
+remain unchanged. The upstream Apache-2.0 license is included in
+[MOBY-LICENSE](../packaging/docker/MOBY-LICENSE). Modified for YubiQuity on
+2026-10-21; no other upstream rules were edited.
+
+This permits those namespace syscalls for **all processes in this container**,
+not only Chrome; kernel capability and AppArmor checks still apply. It increases
+the exposed namespace syscall surface. It is not a proof of the absolute minimum
+permissions Chrome uses. The Docker daemon version/default policy is not exposed
+here, so the pinned upstream baseline is not claimed identical to that daemon's
+built-in profile or an organization-specific policy. Do not replace an existing
+custom security policy without comparing it first.
+
+`/usr/bin/python3 tests/container_seccomp.py` checks the exact upstream baseline
+hash, the three-call exception, default-deny and retained `clone3` fallback.
+These are offline checks only: Docker cannot apply a replacement profile to this
+running session, so actual loading and browser startup remain unverified until
+the user recreates it. Docker's [profile instructions](https://docs.docker.com/engine/security/seccomp/)
+describe the `--security-opt` mechanism and host-side path resolution.
+
 ### Chrome sandbox research and current decision
 
-On 2026-10-21 the user excluded host access and authorized Firefox-only validation
-if Chrome cannot run with narrowly scoped container permissions. The current
-topology is the daemon and Firefox inside this container. Chrome is deferred,
-not a blocker or a passed test; its failure is independent of UHID.
+On 2026-10-21 the user excluded agent host access and authorized Firefox-only
+validation if Chrome cannot run with narrowly scoped container permissions.
+The user subsequently offered to apply a supplied profile and recreate the
+container; the exact instructions are above. Chrome is awaiting that retry,
+not a passed test. Firefox remains available; the failure is independent of UHID.
 
 [Playwright's Docker documentation](https://playwright.dev/docs/docker#crawling-and-scraping)
 describes sandboxed Chromium as a non-root user with a seccomp profile permitting

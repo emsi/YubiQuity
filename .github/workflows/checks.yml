@@ -32,6 +32,7 @@ jobs:
           /usr/bin/python3 tests/browser/test_rp.py
           /usr/bin/python3 tests/vault_crypto.py
           /usr/bin/python3 tests/packaging.py
+          /usr/bin/python3 tests/container_seccomp.py
       - name: Audit production and fuzz dependencies
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
