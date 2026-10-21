@@ -1,14 +1,58 @@
 # Development test report
 
-Date: 2026-10-20. This is progress evidence, not a completed release or FIDO
+Core evidence: 2026-10-20; container/browser update: 2026-10-21. This is progress
+evidence, not a completed release or FIDO
 certification report. The full acceptance gates remain in the
 [implementation plan](../firefox-virtual-fido2-plan.md).
 
 Scope update, 2026-10-21: the user excluded host access and authorized Firefox-only
 validation if Chrome cannot run with narrowly scoped container permissions.
-Firefox stable/ESR are the current targets. Chrome, cross-browser reuse and host
-deployment remain unverified, not blockers or newly passing tests. This update
-does not change the historical results below.
+The user subsequently recreated the container with the supplied seccomp policy.
+Chrome is now runnable and the positive interoperability scenarios below pass.
+Host deployment remains outside authorized execution scope and unverified.
+
+## Chrome container validation (2026-10-21)
+
+User and user/PID/network namespace probes now exit 0. The container capability
+bounding set remains `00000000a80425fb` (no `CAP_SYS_ADMIN`); seccomp filtering and
+`docker-default (enforce)` AppArmor remain active. Existing browser archives were
+reused. Ubuntu runtime/test packages and rustup wrappers were restored; no browser
+download, setuid helper installation, authenticator change or browser patch was
+needed. Tesseract supplies test-only recognition of Chrome's native UI.
+
+Chrome for Testing 155.0.8059.84 reports namespace layer-1, PID/network namespaces,
+seccomp-BPF and TSYNC active. The harness now checks these values for every Chrome
+session and records the full status. Yama non-broker ptrace protection reports
+`No`; this is not a claim that every diagnostic item is enabled or a sandbox audit.
+
+Successful artifacts under `target/browser-results/`:
+
+| Scenario | Run |
+|---|---|
+| Chrome sandbox diagnostic (headless; also captured in headed runs) | `sandbox-1792588879871827615` |
+| Chrome registration/allow-list login, device attached after browser starts | `1792588878705411339` |
+| Firefox/Chrome registration and credential reuse in both directions, UV discouraged | `1792588999467477102` |
+| Chrome resident registration and discoverable login, required PIN/UV, attach after browser starts | `1792589538209263290` |
+| Chrome encrypted-vault resident/PIN registration, SIGKILL, new daemon/fresh browser, allow-list and discoverable login | `persistent-1792589558216348575` |
+| Chrome two distinct residents, both allow lists and each native chooser result, required PIN/UV | `accounts-1792589698429350771` |
+| Firefox/Chrome required-PIN resident ceremonies and credential reuse in both directions; final harness | `1792589813451807704` |
+| Firefox two-account regression after shared harness changes | `accounts-1792589812258240709` |
+
+Seven RP-verifier tests, seven new offline UI/sandbox-guard tests and three
+seccomp-profile integrity tests pass. Compose merge tests were skipped in this
+recreated container because the Compose plugin is absent; the earlier recorded
+offline Compose result is not a new run. Core Rust/full-device suite results below
+are the earlier 2026-10-20 evidence, not rerun claims for this update.
+
+Initial PIN runs timed out in test UI handling, not sandbox startup: Chrome uses
+a native Views dialog rather than Firefox's WebDriver-visible PIN alert, and its
+account sheet needs a recognized selection/Continue click with settling time.
+Those failures and interrupted obsolete-harness runs are not counted as passes.
+The final adapter recognizes native text/account word boxes on the test-owned
+display, rejects unknown UI versions and verifies all successful results at the RP.
+Chrome's complete negative suite remains unfinished: an exploratory run passed
+registration abort, then was interrupted while investigating the native denial UI.
+No public-site registration was performed.
 
 ## Environment and versions
 
@@ -25,10 +69,10 @@ does not change the historical results below.
 
 | Stock package | Observed result | Boundary |
 |---|---|---|
-| Mozilla Firefox stable 158.0.1, Linux x86-64 en-US archive | Basic/resident/required-UV, native two-account selection, persistence/service, negative cases and hotplug pass | Container user-namespace probe warns `EPERM`; not a claim that all sandbox layers work |
+| Mozilla Firefox stable 158.0.1, Linux x86-64 en-US archive | Basic/resident/required-UV, native two-account selection, persistence/service, negative cases and hotplug pass; cross-browser and account regression pass after recreation | Historical runs warned `EPERM`; the current namespace probes pass, but Firefox sandbox layers were not independently audited |
 | Mozilla Firefox ESR 153.5.1esr, Linux x86-64 en-US archive | Same scenario set passes with the unchanged authenticator | Same namespace warning; native menu UI test adapter has inspected ESR coordinates |
-| Chrome for Testing 155.0.8059.84 | Startup blocked before WebAuthn by “No usable sandbox” | No interoperability or cross-browser reuse claim |
-| Ordinary stable distribution Chrome/Chromium | Not validated; deferred | A sandbox-capable container would be needed for validation within the authorized scope |
+| Chrome for Testing 155.0.8059.84 | Sandbox startup, basic/resident/required-UV, native two-account selection, persistence and bidirectional Firefox reuse pass | Complete Chrome negative/recovery suite and other Chrome packages remain unverified |
+| Ordinary stable distribution Chrome/Chromium | Not validated; deferred | Chrome for Testing results do not validate other packages |
 | Snap/Flatpak browser packages | Not validated; deferred | Confined-package runtime and device access have not been tested; no host execution or confinement bypass is proposed |
 
 No row implies support for arbitrary browsers or packages not tested here.
@@ -72,7 +116,7 @@ browser's virtual-authenticator API. No browser extensions, WebAuthn preference
 overrides, sandbox-disabling flags, or browser-dependent authenticator modes are
 used. Standard WebDriver prompt handling is set to `ignore` so polling does not
 dismiss the browser's PIN prompt. Keyboard input is confined to the test's own
-Xvfb display, after WebDriver identifies that prompt. PIN `1234` and incorrect
+Xvfb display, after WebDriver (Firefox) or test-only OCR (Chrome) identifies that prompt. PIN `1234` and incorrect
 PIN `0000` are public test data, not user secrets.
 
 `accounts.py` additionally selects each native Firefox account-popup result.
@@ -150,30 +194,30 @@ browser security features.
 
 | Check (including deferred coverage) | Current state |
 |---|---|
-| Chromium-family ceremonies | Chrome exits before a session starts with “No usable sandbox”; reproduced directly and via ChromeDriver |
-| Cross-browser reuse, both directions | Harness present; not executed successfully because Chrome cannot start |
-| Multiple-account browser selection | Firefox and independent-client enumeration pass; Chromium selection remains unverified |
-| Browser hotplug | Firefox before/after startup, reattach between ceremonies, and removal during pending login followed by recovery verified; Chromium remains unverified |
+| Chromium-family negative/recovery cases | Positive Chrome for Testing ceremonies pass; complete native denial/cancellation/wrong-PIN/lock-during-login matrix remains unfinished |
+| Other browser packages | Cross-browser reuse and two-account selection pass for the named Firefox/Chrome builds only |
+| Browser hotplug | Firefox before/after startup and pending-login removal/recovery verified; Chrome before/after startup and crash/restart pass, but pending-login removal/recovery remains unverified |
 | Storage deployment validation | Local-filesystem/crash tests pass; not a claim of tested power-loss behavior on every filesystem/storage stack |
 | Release packaging/matrix | Unit and scoped udev rules implemented; host application, systemd-user execution, ordinary stable distribution Chrome/Chromium and confined packages remain unverified; Mozilla ESR archive scenarios pass |
 | Broader release validation | Target deployment/browser matrix and agreed disposable public-site smoke tests remain; longer fuzz campaigns are additional assurance, and hosted CI execution has not been observed |
 
-Firefox launches despite an `EPERM` warning from its user-namespace probe. That
+In the pre-recreation environment, Firefox launched despite an `EPERM` warning from its user-namespace probe. That
 does not establish that every sandbox layer is available inside this container.
-Chrome's launch failure is an environment limitation, not a passed interoperability
+Chrome's historical launch failure was an environment limitation, not a passed interoperability
 test. We have not used `--no-sandbox` to bypass it. Host/container access and sandbox
 constraints are documented in [container setup](container-uhid.md).
 The renewed stock Chrome attempt is recorded in
 `target/browser-results/1792531728866311477/`; it failed before a WebDriver session
 or HID attachment. Direct headless startup with a disposable profile also exits
-134 with the same sandbox failure. User namespace creation returns `EPERM`,
+134 with the same sandbox failure. At that time user namespace creation returned `EPERM`,
 seccomp filtering and enforcing `docker-default` AppArmor are active, and there
 is no host Docker socket or systemd session available here. The exact responsible
 policy layer cannot be established from these container checks alone. Host access
-is now explicitly excluded; Chrome validation is deferred in favor of Firefox.
+remains explicitly excluded. The user-applied container recreation resolved the
+startup blocker and enabled the Chrome results recorded above.
 The non-root/seccomp-profile route and repeated namespace checks are documented
 in the [2026-10-21 container investigation](container-uhid.md#chrome-sandbox-research-and-current-decision).
-No container capabilities, security profiles, or browser settings were changed.
+The agent did not change host policy or add container capabilities/browser overrides.
 See Chromium's
 [namespace restriction documentation](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md).
 

@@ -7,18 +7,19 @@ block the current Firefox milestone.
 
 ## Current scope (2026-10-21)
 
-The user excluded host access and authorized sticking with Firefox if Chrome
-cannot run with narrowly scoped container permissions. Stock Firefox stable/ESR
-inside this container are the current validation targets. Chrome and cross-browser
-reuse are deferred, not passed; host systemd/udev deployment remains unverified
-and outside the authorized execution scope. The protocol implementation remains
-browser-independent. See the [sandbox research](container-uhid.md#chrome-sandbox-research-and-current-decision).
+The user excluded agent host access and subsequently recreated the container
+with the supplied seccomp policy. Namespace probes and sandboxed Chrome now work
+without additional container capabilities or AppArmor relaxation. Chrome for
+Testing 155.0.8059.84 passes basic/resident/required-UV ceremonies, both account
+selections and encrypted-vault SIGKILL/fresh-profile recovery. Firefox/Chrome
+credential reuse passes in both directions with and without required UV.
+Seven offline UI/sandbox-guard tests and seven RP-verifier tests pass.
+See [current evidence](test-report.md#chrome-container-validation-2026-10-21).
 
-The user subsequently offered to recreate the container with a supplied policy.
-[Exact launch instructions and profile](container-uhid.md#applying-the-chrome-seccomp-profile)
-are now provided for that retry, with no added container capabilities or agent
-host access. Three offline profile-integrity checks pass; runtime loading,
-sandbox status and Chrome/WebAuthn remain unverified until recreation.
+Chrome's full negative/recovery suite, other browser packages and public-site
+smoke tests remain unfinished. Host systemd/udev runtime remains unverified and
+outside authorized execution scope. The authenticator code was unchanged; the
+new Chrome native UI handling is in the test harness only.
 
 Git author configuration is resolved. The implementation and follow-up tests
 were committed as `e562c25` and `1ad38b7`; the working tree was clean afterward.
@@ -33,7 +34,7 @@ were committed as `e562c25` and `1ad38b7`; the working tree was clean afterward.
 - [x] Scoped dynamic hidraw helper; normal detach and daemon-crash cleanup.
 - [x] Independent libfido2 and python-fido2 discovery, INIT/PING/GetInfo tests.
 - [x] Real discovery in stock Firefox stable/ESR; before/after browser startup.
-- Deferred: Chromium discovery and hotplug, with no compatibility claim.
+- [x] Chrome for Testing discovery with attachment before/after browser startup; namespace/seccomp status captured and checked.
 
 ## Authenticator behavior
 
@@ -66,7 +67,9 @@ were committed as `e562c25` and `1ad38b7`; the working tree was clean afterward.
 - [x] Local RP checks fresh challenges, origin, RP hash, signature and user binding, with negative tests of the verifier.
 - [x] Firefox stable/ESR registration, allow-list and discoverable login, UV required.
 - [x] Firefox stable/ESR two-account selection and negative RP/credential/exclusion/PIN/approval/cancellation tests.
-- Deferred: Chromium equivalents and cross-browser credential reuse in both directions.
+- [x] Chrome for Testing registration, allow-list/discoverable required-UV login, two-account selection and persistent crash/restart.
+- [x] Firefox/Chrome credential reuse in both directions, with and without required UV.
+- [ ] Complete Chrome negative/recovery matrix (native denial UI needs additional harness handling).
 - [ ] Crash/reattach, concurrent channels, malformed traffic and resource-bound tests.
 - [x] Independent signature verification and seeded ASan parser fuzzing; bounded CI workflow implemented and its commands checked locally (hosted execution not yet recorded).
 - [x] Dedicated trusted-attestation rejection in the RP verifier and real Firefox flow; explicitly outside supported scope.
@@ -76,27 +79,27 @@ were committed as `e562c25` and `1ad38b7`; the working tree was clean afterward.
 
 ## Acceptance audit (not a completion claim)
 
-The following audit maps the plan to code and observed tests. The 2026-10-21
-user-directed scope change defers Chrome and excludes host execution; it does
-not turn either into a passing test. The broader matrix remains visible below
-to prevent unsupported compatibility or deployment claims.
+The following audit maps the plan to code and observed tests. Host execution
+remains excluded. Chrome results now have actual post-recreation browser/RP
+evidence; untested scenarios/packages remain explicit gaps.
 
 | Plan requirement | Authoritative evidence inspected | Remaining gap |
 |---|---|---|
-| §§1–3: software external key, unchanged browsers, selected CTAP2.0/ES256/none profile and separated responsibilities | Rust modules and injectable store/signer/random/context interfaces; stock Firefox WebDriver logs and independent RP verification through real UHID | Chromium interoperability is deferred and unproved; no cross-browser success claim |
-| §4.1: UHID descriptor/identity, lifecycle, report normalization, control replies | `src/uhid.rs`; report-normalization unit test; real maximum PING, GET/SET feature-report errors, clean exit/SIGKILL removal | Host-managed node permissions and Chromium discovery/hotplug |
+| §§1–3: software external key, unchanged browsers, selected CTAP2.0/ES256/none profile and separated responsibilities | Rust modules and injectable interfaces; actual Firefox/Chrome ceremonies and bidirectional credential reuse verified by the RP through real UHID | Complete Chrome negative/recovery matrix and other browser packages |
+| §4.1: UHID descriptor/identity, lifecycle, report normalization, control replies | `src/uhid.rs`; real feature reports/PING/lifecycle; Firefox/Chrome attachment timing and Chrome crash/restart | Host-managed node permissions and Chrome removal during pending login |
 | §4.2: INIT/PING/CBOR/CANCEL/KEEPALIVE/ERROR, bounded parsing/channels, busy/resync/timeouts, late-result rejection | `src/hid.rs`, `src/cbor.rs`, `src/service.rs`; boundary/malformed/state tests, four ASan targets, real competing-channel/expiry/cancellation tests | Not a certification or exhaustive resource/security proof; selected deployment/browser matrix still required |
-| §§4.3–4.4: all six commands, keys/COSE/DER, RP binding, exclusion, residents, multiple accounts/privacy, durable registration | `src/authenticator.rs`, `src/crypto.rs`, `src/store.rs`; credential/PIN suites, independent signature verification, Firefox account selection and negative cases | Same scenarios and credential reuse in Chromium, both directions |
-| §4.5: request-bound approval, silent probes, PIN setup/change/retries/blocking, UV, cancellation and lock | `src/pin.rs`, `src/service.rs`, `src/control.rs`; unit/real-device suites and native Firefox PIN/retry/approval/removal flows | Chromium PIN/account UI and recovery; automated disposable approvals do not prove real human presence |
+| §§4.3–4.4: all six commands, keys/COSE/DER, RP binding, exclusion, residents, multiple accounts/privacy, durable registration | Credential/PIN suites, independent verification, Firefox/Chrome account selection, bidirectional reuse and Firefox negative cases | Complete Chrome negative/recovery scenarios |
+| §4.5: request-bound approval, silent probes, PIN setup/change/retries/blocking, UV, cancellation and lock | Unit/real-device suites, native Firefox negative/recovery flows, Chrome native PIN and account UI with RP-verified UV | Complete Chrome negative/recovery matrix; automated approvals do not prove real human presence |
 | §5: encrypted/versioned/bounded vault, fresh salt/nonces, atomic writes, locking/permissions, persistent retries, errors/secret lifetime | `src/vault.rs`, `src/secret_input.rs`, state Drop implementations; vault fault tests, real EFBIG/crash/restart, independent Argon2/libsodium check | Target-filesystem power-loss behavior is not established; root/same-user compromise and rollback remain explicitly outside the protection offered |
 | §§5–6: counter/backup flags, no export, ordinary CLI and explicit test backend | Source flag construction and CLI parsing; independent flags, exact deletion/reset, locked-service and persistent-browser tests | No missing export/sync/SSH feature: these are explicitly deferred, not release substitutes |
 | §6: user service and scoped device policy | Unit/rules/instructions exist; two strict offline packaging checks; normal unprivileged serve/control exercised with real HID | Actual systemd start/stop/restart and udev group/ACL application remain unverified; host execution is excluded |
 | §7: repository responsibility split | One Rust package with protocol/authenticator/crypto/PIN/vault/control/UHID modules and separate test/fuzz/packaging artifacts | No requirement for empty crates; the plan expressly permits finalized boundaries |
-| §8: milestone gates | Foundation and persistence have local evidence; transport, ceremony and complete-passkey gates have Firefox/independent-client evidence | Current browser gates are Firefox stable/ESR; deferred Chromium coverage does not establish a full cross-browser release |
-| §9: local RP, three test levels, browser/package matrix, public-site smoke tests | Seven RP tests, 52 Rust tests, 27 real-device tests, recorded Firefox stable/ESR runs, parser campaigns and CI commands | Ordinary stable Chrome/Chromium, cross-browser reuse, confined-package matrix, and user-agreed disposable public-site flows remain |
+| §8: milestone gates | Foundation/persistence, independent clients, Firefox and positive Chrome interoperability evidence | Negative/recovery and deployment matrix still prevent a completed-release claim |
+| §9: local RP, three test levels, browser/package matrix, public-site smoke tests | Seven RP and seven UI tests, prior 52 Rust/27 device tests, Firefox stable/ESR and Chrome runs, parser campaigns and CI commands | Complete Chrome negative suite, ordinary distribution/confined packages, and public-site flows |
 | §10: runnable environment and input | UHID/hidraw usable; tools installed; Firefox stable/ESR work; namespace denial rechecked; Git author configured and commits made | Public-site smoke tests not performed; no host session or Chrome launch is required for continuing Firefox work |
 
-The renewed Chrome attempt failed before WebAuthn or device discovery:
+Historical pre-recreation evidence (superseded by the successful runs above): the
+renewed Chrome attempt failed before WebAuthn or device discovery:
 `tests/browser/ceremonies.py --browser chrome --headed --attach-after-start`,
 artifacts `target/browser-results/1792531728866311477/`. A direct disposable-profile
 launch also exited 134 with “No usable sandbox”. `unshare --user --map-root-user
@@ -104,9 +107,10 @@ true` returns `EPERM`; seccomp filtering and enforcing `docker-default` AppArmor
 are active. These observations do not identify which host policy layer(s) must
 change. No sandbox-disabling flags or broad host-policy relaxations were applied.
 
-## Current evidence
+## Earlier core and Firefox evidence
 
-Current implementation validation (2026-10-20):
+Implementation validation recorded on 2026-10-20 (including the old container's
+Chrome failure; current Chrome results are linked above):
 
 - `cargo fmt --all -- --check`: passed.
 - `cargo clippy --all-targets --locked -- -D warnings`: passed.
@@ -227,6 +231,6 @@ Before implementation, a disposable UHID device was successfully registered in t
 container, exposed as `/dev/hidraw0` (234:0), and opened by UID 1000. Both report
 directions passed (65-byte UHID output including report ID; 64-byte hidraw input).
 The node and device were removed afterward. Rust and FIDO CLI dependencies are
-installed. Stock browser binaries are present; Chromium's container sandbox
-startup failure remains unresolved. Its validation is deferred, and Firefox work
-continues without requesting host access or relaxing sandbox protections.
+installed. The later user-applied recreation resolved Chrome sandbox startup.
+Positive Chrome tests and Firefox regressions pass within the recorded scope;
+remaining negative/deployment checks do not imply missing basic interoperability.

@@ -7,6 +7,8 @@ failure screenshot are retained under target/browser-results/.
 """
 import argparse
 import base64
+import csv
+import io
 import json
 import os
 from pathlib import Path
@@ -27,6 +29,16 @@ from fido2.ctap2.pin import ClientPin
 
 ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
 BIN = Path.home() / ".local/bin"
+
+
+def check_chrome_sandbox(status):
+    fields = dict(line.split("\t", 1) for line in status.splitlines() if "\t" in line)
+    required = {"Layer 1 Sandbox": "Namespace", "PID namespaces": "Yes",
+                "Network namespaces": "Yes", "Seccomp-BPF sandbox": "Yes",
+                "Seccomp-BPF sandbox supports TSYNC": "Yes"}
+    for key, value in required.items():
+        if fields.get(key) != value:
+            raise AssertionError(f"Chrome sandbox status lacks {key}={value}: {status}")
 
 
 class IsolatedDisplay:
@@ -77,6 +89,65 @@ class IsolatedDisplay:
         subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+a"], env=self.env, check=True, timeout=3)
         subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "50", pin], env=self.env, check=True, timeout=3)
         subprocess.run(["xdotool", "key", "--clearmodifiers", "Return"], env=self.env, check=True, timeout=3)
+
+    def chrome_dialog(self, version):
+        # Chrome's Views dialog is not exposed as a WebDriver JavaScript alert.
+        # Read only our isolated display. Never type on a timer without first
+        # recognizing the native PIN screen; unknown versions fail explicitly.
+        if int(version.split(".")[0]) != 155:
+            raise ValueError(f"inspect the native UI for Chrome {version} before automating it")
+        from PIL import ImageGrab
+        screenshot = ImageGrab.grab(xdisplay=self.display)
+        encoded = io.BytesIO()
+        # Inspected native dialog bounds for the fixed 1280x1024 test display.
+        # Avoid matching surrounding RP text. This is fixture automation, not
+        # a security boundary against a malicious page or local process.
+        screenshot.crop((310, 90, 760, 480)).save(encoded, format="PNG")
+        result = subprocess.run(
+            ["tesseract", "stdin", "stdout", "-l", "eng", "--psm", "6", "tsv"],
+            input=encoded.getvalue(), capture_output=True, check=True, timeout=5,
+        )
+        words = [row for row in csv.DictReader(io.StringIO(result.stdout.decode()), delimiter="\t")
+                 if row["text"].strip()]
+        message = " ".join(row["text"] for row in words)
+        normalized = " ".join(message.lower().split())
+        return screenshot, message, normalized, words
+
+    def chrome_pin_prompt(self, version, retry=False):
+        screenshot, message, normalized, _ = self.chrome_dialog(version)
+        if "pin required" not in normalized or "pin for your security key" not in normalized:
+            return None
+        if retry and not any(word in normalized for word in ("incorrect", "wrong", "invalid")):
+            return None
+        screenshot.save(self.artifacts / f"chrome-pin-{time.time_ns()}.png")
+        return message
+
+    def chrome_confirm_account(self, version, expected_user):
+        screenshot, message, normalized, words = self.chrome_dialog(version)
+        if ("choose a passkey" in normalized and "for localhost" in normalized
+                and "security key" in normalized):
+            matches = [word for word in words if word["text"].lower() == expected_user.lower()
+                       and float(word["conf"]) >= 60]
+            if len(matches) != 1:
+                return None
+            word = matches[0]
+            x = 310 + int(word["left"]) + int(word["width"]) // 2
+            y = 90 + int(word["top"]) + int(word["height"]) // 2
+            if not (330 <= x <= 740 and 300 <= y <= 445):
+                return None
+            screenshot.save(self.artifacts / f"chrome-choose-account-{time.time_ns()}.png")
+            subprocess.run(["xdotool", "mousemove", str(x), str(y), "click", "1"],
+                           env=self.env, check=True, timeout=3)
+            return message
+        if ("use a saved passkey for localhost" not in normalized
+                or "security key" not in normalized
+                or expected_user.lower() not in normalized.split()):
+            return None
+        screenshot.save(self.artifacts / f"chrome-account-{time.time_ns()}.png")
+        # Inspected Chrome 155 Continue button. Click after the sheet settles;
+        # pressing Enter alone was not reliable in this layout.
+        subprocess.run(["xdotool", "mousemove", "690", "394", "click", "1"], env=self.env, check=True, timeout=3)
+        return message
 
     def select_test_account(self, index, version):
         if index not in (0, 1):
@@ -184,6 +255,12 @@ class WebDriver:
                          "headed": self.headed, "binary": str(self.binary), "driver": str(self.driver),
                          "binary_resolved": str(self.binary.resolve()), "driver_resolved": str(self.driver.resolve())})
             print(f"{self.family}: {result['capabilities'].get('browserVersion')}", flush=True)
+            if self.family == "chrome":
+                self.navigate("chrome://sandbox")
+                status = self.script("return document.body.innerText")
+                self.record({"event": "sandbox-status", "text": status})
+                check_chrome_sandbox(status)
+                self.navigate("about:blank")
             return self
         except BaseException:
             self.__exit__(None, None, None)
@@ -192,6 +269,11 @@ class WebDriver:
     def __exit__(self, error_type, *_args):
         if error_type is not None:
             self.record({"event": "failed", "exception": error_type.__name__})
+            if self.display is not None:
+                try:
+                    self.display.screenshot(f"{self.label}-native-failure")
+                except Exception:
+                    pass
         if self.session:
             if error_type is not None:
                 try:
@@ -235,6 +317,9 @@ class WebDriver:
         self.command("POST", f"/element/{element[ELEMENT]}/click", {})
         end = time.monotonic() + 40
         pin_sent_at = None
+        chrome_ui_checked_at = 0
+        chrome_account_attempts = 0
+        chrome_account_clicked_at = 0
         while time.monotonic() < end:
             try:
                 result = self.script("return window.result")
@@ -275,6 +360,30 @@ class WebDriver:
                 return result
             if during_wait is not None:
                 during_wait(self)
+            if self.family == "chrome" and pins and time.monotonic() - chrome_ui_checked_at > 0.5:
+                if self.display is None:
+                    raise RuntimeError("Chrome PIN typing requires the test-owned isolated display")
+                chrome_ui_checked_at = time.monotonic()
+                if pin_sent_at is None or time.monotonic() - pin_sent_at > 1:
+                    message = self.display.chrome_pin_prompt(self.version, retry=bool(self.last_pin_prompts))
+                    if message is not None:
+                        self.display.type_test_pin(pins.pop(0))
+                        self.last_pin_prompts.append(message)
+                        self.record({"event": "native-pin-prompt", "attempt": len(self.last_pin_prompts),
+                                     "message": message, "recognition": "isolated-display-ocr"})
+                        pin_sent_at = time.monotonic()
+            if (self.family == "chrome" and kind == "authenticate" and not pins
+                    and pin_sent_at is not None and time.monotonic() - pin_sent_at > 1.5
+                    and chrome_account_attempts < 3 and time.monotonic() - chrome_account_clicked_at > 1
+                    and time.monotonic() - chrome_ui_checked_at > 0.5):
+                chrome_ui_checked_at = time.monotonic()
+                message = self.display.chrome_confirm_account(self.version, settings.get("username", "alice"))
+                if message is not None:
+                    chrome_account_attempts += 1
+                    chrome_account_clicked_at = time.monotonic()
+                    self.record({"event": "native-account-continue", "message": message,
+                                 "attempt": chrome_account_attempts,
+                                 "recognition": "isolated-display-ocr"})
             if account_choice is not None and pin_sent_at is not None and time.monotonic() - pin_sent_at > 1:
                 self.display.screenshot(f"{self.label}-account-{account_choice}")
                 self.display.select_test_account(account_choice, self.version)

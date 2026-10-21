@@ -23,16 +23,18 @@ daemon crash/restart and a fresh browser profile, with PIN verification required
 The optional local service starts locked. Its same-user control client can unlock,
 inspect a pending request, explicitly approve/deny it, or lock/detach again.
 
-**This is still under development, not a completed release.** Deployment and full
-cross-browser/release validation remain unfinished. Chrome 155.0.8059.84 currently
-exits with “No usable sandbox” in this container; Chrome compatibility is not yet
-verified. Use disposable test accounts.
+**This is still under development, not a completed release.** After container
+recreation with the supplied seccomp profile, Chrome for Testing 155.0.8059.84
+passes registration/login, required-PIN discoverable credentials, two-account
+selection, and encrypted-vault crash recovery. Firefox/Chrome credential reuse
+passes in both directions with and without required UV. Chrome reports active
+namespace and seccomp-BPF sandboxes; no added container capabilities or AppArmor
+relaxation was needed. See the [test report](docs/test-report.md#chrome-container-validation-2026-10-21).
 
-Current validation is Firefox stable/ESR inside the container. Per user direction
-on 2026-10-21, host access is excluded and Chrome is optional, not a blocker.
-The authenticator remains browser-independent in design; this is a validation
-boundary, not a Chrome compatibility claim. See the
-[sandbox research and decision](docs/container-uhid.md#chrome-sandbox-research-and-current-decision).
+Agent host access remains excluded. Chrome's complete negative/recovery suite,
+ordinary distribution packages, public-site smoke tests and deployment validation
+remain unfinished. Use disposable test accounts; positive test results are not
+a universal browser compatibility or security certification claim.
 
 The separate `probe` command deliberately provides only transport and GetInfo,
 without advertising credentials or PIN. No mode advertises built-in biometric UV
@@ -281,6 +283,7 @@ rules. Actual host permissions and systemd runtime behavior remain separate gate
 
 ```bash
 /usr/bin/python3 tests/browser/test_rp.py
+/usr/bin/python3 tests/browser/test_ui.py
 /usr/bin/python3 tests/browser/ceremonies.py --browser firefox
 /usr/bin/python3 tests/browser/ceremonies.py --browser firefox --pin-test
 /usr/bin/python3 tests/browser/ceremonies.py --browser firefox --pin-test --attach-after-start
@@ -288,8 +291,12 @@ rules. Actual host permissions and systemd runtime behavior remain separate gate
 /usr/bin/python3 tests/browser/service.py
 /usr/bin/python3 tests/browser/accounts.py
 /usr/bin/python3 tests/browser/negative.py --browser firefox
-# Required cross-browser gate; currently fails at Chrome sandbox startup here:
+# Verified cross-browser and Chrome scenarios in the recreated container:
 /usr/bin/python3 tests/browser/ceremonies.py --browser both
+/usr/bin/python3 tests/browser/ceremonies.py --browser both --pin-test
+/usr/bin/python3 tests/browser/ceremonies.py --browser chrome --pin-test --attach-after-start
+/usr/bin/python3 tests/browser/accounts.py --browser chrome
+/usr/bin/python3 tests/browser/persistence.py --browser chrome
 ```
 
 The test fixture binds only to localhost. It checks one-use challenges, exact
@@ -308,8 +315,9 @@ same browser session. It distinguishes a browser error
 from an RP rejection so an unrelated failure cannot satisfy an expected result.
 Its strict RP requests direct attestation and explicitly rejects the device's
 `none` result. This is a negative policy fixture, not a manufacturer trust store.
-The shared harness also accepts `--browser chrome`; that run still requires a
-working sandboxed Chrome environment and is not claimed to pass here.
+The negative harness also accepts `--browser chrome`, but that complete suite is
+not yet verified: Chrome's UI after an explicit denial needs additional test-side
+handling. This does not invalidate the separately verified positive scenarios.
 
 For another stock installation, set `YUBIQUITY_FIREFOX_BINARY` or
 `YUBIQUITY_CHROME_BINARY` to its executable path. Matching driver paths can be
@@ -340,11 +348,20 @@ test-owned display. No input is sent to your desktop. `--headed` also uses an
 isolated display; its `/tmp/.X11-unix` directory needs normal writable/sticky
 permissions (conventionally root-owned `1777`).
 
+Chrome's native Views PIN/account dialogs are not WebDriver JavaScript alerts.
+The Chrome 155 adapter recognizes their text using Tesseract English OCR on the
+isolated display, types the public test PIN and uses ordinary mouse clicks for
+account selection/Continue. It recognizes the expected account before clicking;
+the RP independently verifies the resulting identity, signature and UV. Unknown
+UI versions fail explicitly. This is test automation, not an authenticator mode
+or a security boundary. Each Chrome session records `chrome://sandbox` and requires
+namespace, PID/network and seccomp-BPF/TSYNC layers to report active.
+
 `accounts.py` registers two residents at one RP, checks each allow list, then
 selects each account from Firefox's ordinary popup using native keyboard/mouse UI.
 The RP must verify the selected user handle, credential ID and UV flag. This
-UI automation is Firefox-specific; it does not change authenticator behavior
-and is not evidence of Chromium's still-unverified selection flow. The menu click
+UI automation does not change authenticator behavior. `--browser chrome` selects
+the separately verified native Chrome chooser. The Firefox menu click
 coordinates match the inspected en-US Firefox 158 stable and 153 ESR layouts on
 the isolated display; unknown versions fail explicitly rather than guessing.
 A different layout may need a harness update. Screenshots retain that evidence.

@@ -1,6 +1,6 @@
 # Software FIDO2 Authenticator for Browsers
 
-Status: implementation in progress; Firefox-first validation per user direction on 2026-10-21. Host access is not authorized.
+Status: implementation in progress; sandboxed Chrome positive-path and Firefox interoperability checks now pass in the recreated container (2026-10-21). Agent host access is not authorized.
 
 Progress and test evidence: [implementation ledger](docs/implementation-status.md).
 
@@ -12,7 +12,7 @@ This plan supersedes the earlier `firefox-virtual-fido2-kernel-module.md` propos
 
 Build a software-backed FIDO2 authenticator that browsers use through their normal external security-key path. Websites should register and authenticate its credentials through ordinary WebAuthn, without extensions, injected JavaScript, browser patches, special WebAuthn preferences, or site-specific integration.
 
-Browser independence remains a design requirement: use one device and protocol implementation without browser-specific operating modes. The current validation milestone covers stock Firefox stable and ESR inside this container. Per user direction on 2026-10-21, Chrome is optional: pursue it only with a working browser sandbox and narrowly scoped container permissions; otherwise defer it without blocking Firefox work. Chromium and other browsers that support standard external FIDO2 HID authenticators remain unverified compatibility targets, not claimed successes. Unsupported browser/OS combinations cannot be made to support security keys by this daemon.
+Browser independence remains a design requirement: use one device and protocol implementation without browser-specific operating modes. Validation covers stock Firefox stable/ESR and Chrome for Testing inside this container. The user's narrowly scoped container-policy update made sandboxed Chrome runnable; registration, PIN-required discoverable login, account selection, persistence and bidirectional Firefox reuse now pass. The complete Chrome negative/recovery suite and other browser packages remain unverified. If further Chrome validation requires broad privilege changes, defer it without blocking Firefox work. Unsupported browser/OS combinations cannot be made to support security keys by this daemon.
 
 “Behaves like a hardware key” means normal registration, passkey login, PIN entry, user approval, and error handling. Concealing the implementation from host inspection or reproducing device fingerprints is outside scope. Trusted manufacturer attestation is an explicit exception.
 
@@ -154,7 +154,7 @@ Use a separate temporary vault per test run. Scripted presence is available only
 
 After browser interoperability works, add a user service, a separate approval client if needed, and installation instructions for device access. Restrict `/dev/uhid` to the intended service/user because it permits creating other HID device types too. Grant the logged-in test browser access to this project's hidraw node without broadly relaxing all HID permissions.
 
-Root is needed only where the target deployment requires module loading or access-policy installation; host administration is not authorized in the current session. Keep the running authenticator unprivileged. Test stock Firefox from the first integration milestones; Chrome/Chromium validation is deferred under the current scope. Snap/Flatpak confinement belongs in an OS/device-access test matrix, not in the authenticator protocol or as a prerequisite choice for the user. Physical security keys also depend on browser device permissions.
+Root is needed only where the target deployment requires module loading or access-policy installation; host administration is not authorized in the current session. Keep the running authenticator unprivileged. Test stock Firefox and the now-runnable sandboxed Chrome through their actual HID paths. Snap/Flatpak confinement belongs in an OS/device-access test matrix, not in the authenticator protocol or as a prerequisite choice for the user. Physical security keys also depend on browser device permissions.
 
 Use [the setup script](scripts/install-dev-tools.sh) for the Ubuntu development dependencies and stock test-browser binaries. See [container device access](docs/container-uhid.md) for host setup and the distinction between UHID access, hidraw access, and browser sandbox requirements. No browser profile preferences or installed browser extensions are changed by setup.
 
@@ -191,7 +191,7 @@ Finalize crate boundaries during setup; this is a responsibility split, not a re
 | 5. Persistence | Encrypted vault, retries, locking, atomic writes, management CLI | Reopened vault authenticates; corruption, write failure, and competing writers fail safely |
 | 6. Release validation | Packaging, browser/package matrix, parser fuzzing, lifecycle checks | Reproducible setup and test report, supported combinations documented |
 
-Stages 3 and 4 may use an in-memory store with the same interface as the persistent vault. Stage 3 is a development milestone, not a finished passkey release. Exercise real browser discovery in stages 2–3 rather than relying on library tests. When Chromium validation becomes available, require registration in either browser to authenticate in the other using the same stored credential before claiming cross-browser interoperability. That check is deferred for the current Firefox milestone.
+Stages 3 and 4 may use an in-memory store with the same interface as the persistent vault. Stage 3 is a development milestone, not a finished passkey release. Exercise real browser discovery in stages 2–3 rather than relying on library tests. Registration in either browser must authenticate in the other using the same stored credential before claiming cross-browser interoperability. That check now passes for the recorded Firefox/Chrome builds, both with and without required UV.
 
 The optional SSH backend comes after these gates. It must cover per-credential key provisioning, agent lifetime, signature conversion, and silent probes before it can replace the software signer. It is not required to finish the initial release.
 
@@ -214,12 +214,12 @@ The RP fixture should generate unpredictable challenges, validate origin and RP 
 | Malformed CBOR/frame or competing channel | Bounded resource use and correct failure/recovery |
 | Daemon crash and restart | Device disappears, then reattaches; persistent credentials still work |
 | Attach before/after browser startup | Enumeration and hotplug both work in each supported deployment |
-| Firefox registration, Chromium login, and reverse (deferred) | Required before a cross-browser compatibility claim, not for the current Firefox milestone |
+| Firefox registration, Chromium login, and reverse | Same credential works without re-enrollment or protocol modes; passed for the recorded builds |
 | Wrong vault passphrase, corruption, disk-write failure | No partial state accepted or successful registration falsely reported |
 | Two daemon instances using one vault | Second writer refused |
 | Trusted-attestation policy | Expected rejection, recorded as outside supported scope |
 
-Current mandatory browser coverage: stock Firefox stable and ESR on Linux inside this container, using disposable profiles and the real external HID path. Chromium and confined-package coverage remain optional, unverified matrix entries. Keep the existing Chrome harness for a future suitably restricted container; do not request a host execution session, add broad capabilities, or disable browser/container sandboxing to obtain a passing result. A physical security key is optional for comparison and is not a prerequisite.
+Use stock Firefox stable/ESR and sandboxed Chrome for Testing on Linux inside this container, disposable profiles and the real external HID path. Record positive and negative coverage separately; current Chrome successes do not establish the unfinished error/recovery matrix. Ordinary distribution and confined-package coverage remain unverified. Do not request an agent host session, add broad capabilities, or disable browser/container sandboxing to obtain a passing result. A physical security key is optional for comparison and is not a prerequisite.
 
 Keep CI tests repeatable without credentials for public websites. After the local fixture passes, use a small set of agreed public sites with disposable accounts as compatibility smoke tests. Account sign-in and any unrelated second factor remain with the user.
 
@@ -229,7 +229,7 @@ No fingerprint-reproduction benchmark is required.
 
 ### Observed development environment
 
-Checks and authorized development-tool installation on 2026-10-20 found the following in the current execution environment. These findings describe the container, not necessarily the user's desktop host.
+Checks and authorized development-tool installation on 2026-10-20 found the following in the earlier execution environment. These findings describe the container, not necessarily the user's desktop host. The 2026-10-21 recreation resolved the Chrome launch failure below; see the [current test report](docs/test-report.md#chrome-container-validation-2026-10-21).
 
 | Component | Observed state | Consequence |
 |---|---|---|
@@ -265,4 +265,4 @@ Useful user input, but not a blocker for starting implementation:
 1. Which two or three sites or application flows matter most after the local RP passes?
 2. Any preference for the approval interface? Terminal approval is the first-release default; a desktop dialog can follow.
 
-Container UHID/hidraw access is verified. Continue Firefox validation without waiting for Chromium or host access. A runnable, sandboxed Chromium-family environment would still be needed before claiming Chromium compatibility, but is not a gate for the current milestone. No browser protocol patch or browser modification is part of the design. See the [container sandbox research](docs/container-uhid.md#chrome-sandbox-research-and-current-decision) for the documented low-capability route and its unverified prerequisites.
+Container UHID/hidraw access and sandboxed Chrome startup are verified after the user's recreation. Continue in-container testing of remaining Chrome error/recovery scenarios and selected public sites when authorized. No browser protocol patch, browser modification or agent host session is part of the design. See the [container setup](docs/container-uhid.md#applying-the-chrome-seccomp-profile) and [test report](docs/test-report.md#chrome-container-validation-2026-10-21) for the permission boundary and exact verified scope.

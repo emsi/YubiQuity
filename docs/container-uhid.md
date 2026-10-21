@@ -124,10 +124,17 @@ Verified in this container on 2026-10-20:
 - Separately installed Firefox ESR 153.5.1esr also passes basic/resident/PIN, account selection, persistence/service and negative/recovery scenarios with the same daemon. Its namespace probe reports the same warning. See the [browser/package matrix](test-report.md#browserpackage-matrix).
 - Chrome for Testing and matching ChromeDriver 155.0.8059.84 are installed. Chrome refuses to launch under the current container policy with “No usable sandbox.”
 
+Update after recreation on 2026-10-21: namespace probes now pass and Chrome for
+Testing launches with active namespace/seccomp-BPF sandboxes. Basic/PIN/resident,
+two-account, persistence and bidirectional Firefox reuse tests pass. The capability
+bounding set is unchanged and `docker-default` AppArmor remains enforcing. See
+the [current test evidence](test-report.md#chrome-container-validation-2026-10-21).
+The failure list above describes the earlier container.
+
 ### Applying the Chrome seccomp profile
 
-The user has offered to recreate the container with a supplied policy. This does
-not authorize the agent to access the host. The ready-to-use file is
+The user recreated the container with the supplied policy; the instructions below
+remain for reproducibility. This does not authorize agent host access. The file is
 [packaging/docker/chrome-seccomp.json](../packaging/docker/chrome-seccomp.json).
 
 #### Docker Compose override
@@ -237,9 +244,10 @@ is:
 /usr/bin/python3 tests/browser/ceremonies.py --browser chrome --headed --attach-after-start
 ```
 
-The agent will run that test, inspect sandbox status and continue the PIN,
-persistence and cross-browser tests after reconnection; no `--no-sandbox` flag or
-browser patch is used. Leave existing browser binaries/profiles alone.
+Those tests and Chrome's sandbox-status check have now passed after recreation;
+no `--no-sandbox` flag or browser patch was used. Leave existing browser binaries
+and profiles alone. Restoring Ubuntu runtime/test packages was sufficient; the
+Chrome native-UI harness additionally uses `tesseract-ocr`/English language data.
 
 If namespace creation still returns `EPERM`, do not add broad privileges. On the
 host, inspect recent kernel audit messages immediately after reproducing it:
@@ -275,18 +283,18 @@ custom security policy without comparing it first.
 
 `/usr/bin/python3 tests/container_seccomp.py` checks the exact upstream baseline
 hash, the three-call exception, default-deny and retained `clone3` fallback.
-These are offline checks only: Docker cannot apply a replacement profile to this
-running session, so actual loading and browser startup remain unverified until
-the user recreates it. Docker's [profile instructions](https://docs.docker.com/engine/security/seccomp/)
+These are offline checks only; actual browser startup and sandbox-status results
+were subsequently obtained in the user-recreated container, separately from those
+checks. Docker's [profile instructions](https://docs.docker.com/engine/security/seccomp/)
 describe the `--security-opt` mechanism and host-side path resolution.
 
 ### Chrome sandbox research and current decision
 
 On 2026-10-21 the user excluded agent host access and authorized Firefox-only
 validation if Chrome cannot run with narrowly scoped container permissions.
-The user subsequently offered to apply a supplied profile and recreate the
-container; the exact instructions are above. Chrome is awaiting that retry,
-not a passed test. Firefox remains available; the failure is independent of UHID.
+The user subsequently applied the supplied profile and recreated the container.
+Chrome now runs and the recorded positive tests pass; no agent host session,
+extra capability, AppArmor relaxation or setuid helper was needed.
 
 [Playwright's Docker documentation](https://playwright.dev/docs/docker#crawling-and-scraping)
 describes sandboxed Chromium as a non-root user with a seccomp profile permitting
@@ -300,10 +308,10 @@ because an example does so.
 
 [Docker documents applying profiles at container launch](https://docs.docker.com/engine/security/seccomp/).
 The running process cannot relax its inherited seccomp filter. AppArmor can
-independently restrict user namespaces, so the seccomp change alone is not a
-verified fix here. No launch-policy or host-policy change was made.
+independently restrict user namespaces in other deployments. In this deployment,
+the user's recreation resolved the blocker with `docker-default` still enforcing.
 
-Read-only diagnostics on 2026-10-21 found:
+Historical read-only diagnostics on 2026-10-21, before recreation, found:
 
 - `unshare --user --map-root-user true` fails with `EPERM` as UID 1000 and as
   container root.
@@ -315,8 +323,9 @@ Read-only diagnostics on 2026-10-21 found:
   grant capabilities outside the container's bounding set or relax seccomp;
   root's failed namespace probe is not a reason to add broad capabilities.
 
-These checks do not identify the exact denying policy layer. Keep the existing
-Chrome harness for a future compatible container, but continue with Firefox now.
+Those initial checks alone did not identify the denying layer. The later
+successful container/browser tests establish that no AppArmor relaxation or
+additional Linux capability was needed here. Keep browser sandbox checks enabled.
 Do not use `--privileged`, `--cap-add=SYS_ADMIN`, `seccomp=unconfined`,
 `apparmor=unconfined`, or `--no-sandbox` as a workaround. No additional browser
 download or sandbox-helper installation was needed for this investigation.
