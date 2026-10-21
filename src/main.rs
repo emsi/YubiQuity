@@ -44,6 +44,12 @@ enum Commands {
         /// Explicit automation input: inherited FD >=3, never a password argument.
         #[arg(long, value_parser = clap::value_parser!(i32).range(3..))]
         passphrase_fd: Option<i32>,
+        /// Attach immediately after creation, reusing the unlock (no second password prompt).
+        #[arg(long)]
+        run: bool,
+        /// Explicit container-only node helper; never selected automatically.
+        #[arg(long, requires = "run")]
+        node_helper: Option<PathBuf>,
     },
     /// Unlock a persistent vault and attach the security key. Always manual presence.
     Run {
@@ -157,14 +163,34 @@ fn main() -> Result<()> {
         Commands::Init {
             vault,
             passphrase_fd,
+            run,
+            node_helper,
         } => {
             Vault::preflight(&vault, true)?;
+            if run {
+                Device::preflight()?;
+            }
             eprintln!("Initializing vault {:?}; choose a strong passphrase separate from the browser PIN.", vault);
             let passphrase = secret_input::read(passphrase_fd, true)?;
             let store = Vault::create(&vault, &passphrase)?;
             drop(passphrase);
-            drop(store);
-            println!("Created encrypted vault {:?}", vault);
+            if run {
+                eprintln!(
+                    "Created encrypted vault {:?}; attaching without a second unlock.",
+                    vault
+                );
+                service::run(
+                    Authenticator::software(store, 0),
+                    service::Options {
+                        node_helper,
+                        exit_after: None,
+                        test_presence: None,
+                    },
+                    shutdown,
+                )?;
+            } else {
+                println!("Created encrypted vault {:?}", vault);
+            }
         }
         Commands::Run {
             vault,
@@ -443,5 +469,29 @@ mod tests {
         ] {
             assert!(credential_id_bytes(&value).is_err());
         }
+    }
+
+    #[test]
+    fn init_run_is_explicit_and_cannot_enable_scripted_presence() {
+        assert!(Args::try_parse_from(["yubiquity", "init", "--run", "--vault", "test.yq"]).is_ok());
+        assert!(Args::try_parse_from([
+            "yubiquity",
+            "init",
+            "--vault",
+            "test.yq",
+            "--node-helper",
+            "helper"
+        ])
+        .is_err());
+        assert!(Args::try_parse_from([
+            "yubiquity",
+            "init",
+            "--run",
+            "--vault",
+            "test.yq",
+            "--test-presence",
+            "approve"
+        ])
+        .is_err());
     }
 }

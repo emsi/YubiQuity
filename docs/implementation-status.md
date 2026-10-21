@@ -8,6 +8,16 @@ is used as a substitute for the full acceptance work.
 
 ## Current scope (2026-10-21)
 
+Host-startup follow-up: native hidraw permission-readiness retry, exact-node
+validation, actionable errors, bounded helper lifecycle, secret-free preflight,
+`doctor` and one-unlock `init --run` are now implemented. New deterministic
+startup tests and real udev-matcher fixtures cover the previously missed paths;
+the integration harness can explicitly run without the container helper.
+See [remediation evidence](test-report.md#native-startup-remediation-2026-10-21).
+The desktop application/installer workflow in plan §6.1 is proposed, not
+implemented; a better CLI is not a completed desktop UX. Host runtime remains
+unverified and no host session was accessed.
+
 The user excluded agent host access and subsequently recreated the container
 with the supplied seccomp policy. Namespace probes and sandboxed Chrome now work
 without additional container capabilities or AppArmor relaxation. Chrome for

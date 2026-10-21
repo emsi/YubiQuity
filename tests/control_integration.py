@@ -33,7 +33,7 @@ def ctl(path, action, *args, passphrase=PASSWORD, check=True):
         command += ["--passphrase-fd", str(secret_fd)]
     try:
         result = subprocess.run(command, pass_fds=() if secret_fd is None else (secret_fd,),
-                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=12)
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=25)
     finally:
         if secret_fd is not None:
             os.close(secret_fd)

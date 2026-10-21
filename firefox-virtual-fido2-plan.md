@@ -158,6 +158,64 @@ Root is needed only where the target deployment requires module loading or acces
 
 Use [the setup script](scripts/install-dev-tools.sh) for the Ubuntu development dependencies and stock test-browser binaries. See [container device access](docs/container-uhid.md) for host setup and the distinction between UHID access, hidraw access, and browser sandbox requirements. No browser profile preferences or installed browser extensions are changed by setup.
 
+### 6.1 Host startup and low-friction UX follow-up (2026-10-21)
+
+The host failures exposed a missing native-startup acceptance gate, not a need
+to change browsers or weaken vault/device permissions. Implemented corrections:
+
+- Wait for successful access to the exact hidraw device, not merely its existence;
+  retry transient permission failures within a deadline and report ownership,
+  mode and current process groups before detaching on failure.
+- Check public vault/path information and UHID access before secret prompts.
+  Keep the secure FD-relative checks at actual use time. Never silently create
+  a missing vault from `run` or overwrite one during initialization.
+- `doctor` is a read-only diagnostic command; `doctor --probe` explicitly adds
+  temporary attachment/removal without credentials.
+- `init --run` creates and attaches with one choose/confirm passphrase flow.
+  Subsequent `run --vault PATH` prompts once and uses that same vault.
+- Exercise delayed/permanent permission failures deterministically, run the
+  actual udev matcher against isolated synthetic devices, and support an
+  explicitly helper-free mode in the existing device/browser harnesses.
+
+These improve the CLI but do not constitute a finished desktop UX. The next
+product slice should deliver the following coherent workflow, rather than more
+shell recipes. It is proposed here, **not implemented or runtime-validated**:
+
+1. **One-time host installation:** one idempotent installer/package for the
+   executable, scoped udev policy and optional user unit/desktop entry. Show
+   exactly what will change, preserve customized rules, and request elevated
+   rights only for those installation steps. Verify saved account membership
+   separately from running process groups. If a desktop restart is needed, say
+   so once; never repeatedly prescribe `newgrp` or silently relax device access.
+2. **Launch and unlock:** one desktop entry opens the selected existing vault,
+   or explicitly offers creation on first use. A missing remembered vault is an
+   error, not a reason to create a replacement. Ask for its passphrase once;
+   persist only the chosen path/settings, not the passphrase. Start locked after
+   login/restart. Do not silently enable autostart or store unlock secrets.
+3. **Approve or deny:** an unprivileged desktop client uses the existing same-UID
+   control channel. Show operation, RP ID and available account description as
+   plain text, with Approve/Deny buttons. Bind every response to the existing
+   exact request token internally; users never copy tokens. Closing, expiry,
+   cancellation, lock or client failure denies/discards the pending decision.
+   Never reinterpret a stale click as approval for the next request, and never
+   offer blanket approval. Avoid notifications that expose account details on
+   the lock screen. The daemon remains responsible for authorization.
+4. **Normal browser interaction:** browsers keep their own security-key chooser
+   and PIN dialog. Explain the two secrets once: the vault passphrase unlocks
+   stored keys; the authenticator PIN is the browser's user-verification step.
+   The application cannot eliminate browser security prompts or repair browser
+   sandbox/device policy by weakening it.
+5. **Status and recovery:** a small view shows Locked, Ready, Approval pending,
+   or an actionable failure. Lock detaches the device; explicit idle/session-lock
+   behavior must be implemented/tested before being promised. Keep `doctor` and
+   token-based CLI approval as support/automation tools, not required daily work.
+
+Desktop acceptance must cover fresh/stale session groups, first use and existing
+vaults, canceled unlock, concurrent/stale dialogs, browser cancellation, app
+restart, no graphical session, and actual systemd-user execution. None requires
+changing Firefox or Chrome. Native host runtime confirmation remains a separate
+gate; agent host access is still not authorized.
+
 ## 7. Proposed repository layout
 
 ```text

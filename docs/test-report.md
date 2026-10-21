@@ -360,6 +360,78 @@ exit, so ignored warnings cannot create a false pass. Both packaging checks pass
 and run in the portable CI job. No unit/rule installation or service startup is
 performed; systemd runtime and restart-policy tests remain unverified.
 
+## Native-startup remediation (2026-10-21)
+
+The host's `Permission denied` report exposed a startup race: the daemon waited
+for node existence and then opened once, without waiting for udev permissions.
+An unconditional container-helper hint obscured the failing stage. The report
+alone cannot prove whether that particular host failure was transient permission
+readiness or a permanently unmatched/missing installed rule.
+
+The corrected path retries actual access for up to two seconds and verifies the
+sysfs instance identity, device major/minor and opened node. It rejects symlinks,
+regular files and replacement devices; it never changes permissions. Failure
+reports contain the stage, elapsed time, node ownership/mode and running process
+groups before detach. Helper advice appears only for an explicitly selected
+helper. Helper readiness and cleanup are bounded. Slow service attachment now
+has a bounded longer unlock-reply wait and a fresh response-flush deadline.
+
+Vault preflight checks public paths/envelopes and existing writer locks without
+creating files or decrypting data. Missing/unsafe components are identified
+before the secret prompt; actual operations repeat the FD-relative checks.
+`doctor` adds read-only diagnostics, with temporary attachment only if `--probe`
+is explicitly supplied. `init --run` reuses the newly created unlocked vault,
+while ordinary `run` never initializes or replaces one.
+
+Verification for this remediation:
+
+- 67 Rust tests pass, including deterministic delayed-creation/permission and
+  permanent-denial cases, node-identity rejection, helper timeout/cleanup,
+  delayed control replies, read-only preflight and exact-path diagnostics.
+- Seven offline CLI startup tests pass, including missing/unsafe/existing vaults
+  and an absent service failing before passphrase input.
+- Three udev behavior tests (multiple positive/negative fixtures) pass with the
+  real udev 255 matcher. They exercise add/change/remove, exact project identity
+  scope, multiline parent attributes, removal of the current uaccess tag, named
+  group resolution, and final group/mode assignments resisting later rules.
+  These run under chroot against umockdev fixtures with copied binaries/libraries;
+  no host filesystem is bound in and no real udev daemon/rule is installed.
+  Synthetic sysfs verification is explicitly disabled **inside this test only**.
+  This validates rule matching/assignments, not actual devtmpfs chmod/ACL timing
+  or the user's installed host policy. Existing two packaging syntax checks pass.
+- All 30 pre-existing real-device integration cases pass; the additional
+  `init --run` case verifies one passphrase read, explicit approval, durable
+  registration and signature-verified login after reopening the vault.
+- Independent vault crypto, seven RP-verifier, eleven UI-guard, four offline
+  public-harness guard and five seccomp/Compose checks pass. Formatting and strict
+  lint pass for production and fuzz targets. No new public registrations were
+  made, and no new fuzz campaign is claimed.
+- Actual Firefox registration followed by SIGKILL, a fresh Chrome profile, and
+  both allow-list/discoverable required-UV logins pass:
+  `target/browser-results/persistent-1792614008828779798/`.
+- Actual Chrome locked-service registration, lock/re-unlock and fresh-profile
+  allow-list/discoverable required-UV logins pass:
+  `target/browser-results/service-1792614023290173558/`.
+
+The real-device/browser runs above still use the development container helper.
+The harness now supports `YUBIQUITY_TEST_DEVICE_MODE=native` with no helper and
+no fallback; `YUBIQUITY_TEST_BINARY` can select the host-built executable. For a
+separately authorized native test environment with Python FIDO dependencies:
+
+```bash
+YUBIQUITY_TEST_DEVICE_MODE=native \
+YUBIQUITY_TEST_BINARY="$PWD/target/host/release/yubiquity" \
+PYTHONPATH=tests /usr/bin/python3 -m unittest -v \
+    transport_integration credential_integration pin_integration \
+    vault_integration control_integration
+```
+
+Run this with no unrelated test daemon; it creates disposable devices/vaults.
+These environment variables are test-harness settings, not production daemon
+backdoors. Actual native host hotplug, desktop group inheritance and systemd-user
+execution remain unverified; host access remains excluded. The desktop UX
+follow-up is specified in plan section 6.1 and is not yet implemented.
+
 ## Security interpretation
 
 These tests demonstrate software protocol behavior. They do not establish

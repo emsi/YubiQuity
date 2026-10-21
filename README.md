@@ -15,6 +15,8 @@ Already have a vault? Use `yubiquity run --vault PATH`; it checks basic
 prerequisites before asking for your passphrase and waits for native hidraw
 permissions. `yubiquity doctor --vault PATH` diagnoses without secrets or setting
 changes; `doctor --probe` explicitly adds a temporary device-access check.
+For a new vault, `yubiquity init --run --vault PATH` creates and attaches in one
+flow, with no extra unlock prompt after choosing and confirming the passphrase.
 
 ## Current status
 

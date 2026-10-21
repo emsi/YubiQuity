@@ -164,20 +164,22 @@ yubiquity_bin="$PWD/target/host/release/yubiquity"
 yubiquity_vault="$HOME/.local/share/yubiquity/host-test/credentials.yq"
 umask 077
 mkdir -p "$HOME/.local/share/yubiquity" &&
-    "$yubiquity_bin" init --vault "$yubiquity_vault" &&
-    "$yubiquity_bin" run --vault "$yubiquity_vault"
+    "$yubiquity_bin" init --run --vault "$yubiquity_vault"
 ```
 
 User-owned `.local` and `.local/share` directories with mode `0775` are allowed;
 you do not need to change their permissions. The vault's immediate `host-test`
-directory must still be private (`0700`). The `&&` chain stops on failure, so
-`run` does not prompt for a passphrase if `init` failed.
+directory must still be private (`0700`). `init --run` checks basic prerequisites,
+creates the vault, and attaches with the same unlocked state. A failure never
+falls through to another password prompt.
 
-`init` asks you to choose and confirm a vault passphrase of at least 12 bytes
-(12 ASCII characters meets that minimum). `run` asks for it again to unlock.
-Neither prompt echoes it. Remember the passphrase: there is no recovery feature.
+`init --run` asks you to choose and confirm a vault passphrase of at least 12 bytes
+(12 ASCII characters meets that minimum), then attaches without asking a third
+time. Neither prompt echoes it. Remember it: there is no recovery feature.
 `init` creates the private `host-test` directory and refuses to overwrite an
-existing vault. On subsequent runs, skip `init` and use the same vault.
+existing vault. On subsequent runs, use `run --vault PATH` with the same vault;
+it asks for the passphrase once. If initialization succeeded but attachment
+failed, the vault still exists: the next attempt is `run`, not `init`.
 
 Leave Terminal A running. Expect a line similar to:
 

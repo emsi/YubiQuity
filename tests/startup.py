@@ -48,6 +48,11 @@ class StartupTests(unittest.TestCase):
             self.assertNotIn("Vault passphrase", result.stderr)
             self.assertEqual(path.read_bytes(), original)
             self.assertEqual(len(list(Path(root).iterdir())), 1)
+            attached = self.command("init", "--run", "--vault", path)
+            self.assertNotEqual(attached.returncode, 0)
+            self.assertIn("already exists", attached.stderr)
+            self.assertNotIn("Vault passphrase", attached.stderr)
+            self.assertEqual(path.read_bytes(), original)
 
     def test_missing_service_is_checked_before_unlock_secret(self):
         with tempfile.TemporaryDirectory(prefix="yubiquity-startup-") as root:

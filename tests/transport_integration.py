@@ -95,6 +95,8 @@ def daemon(command="probe", test_presence=None, *, vault=None, passphrase=None, 
 @contextlib.contextmanager
 def _daemon(command="probe", test_presence=None, *, vault=None, passphrase=None, fail_writes=False):
     args = [str(BINARY), command, *node_arguments()]
+    if command == "init":
+        args.append("--run")
     if test_presence is not None:
         args += ["--test-presence", test_presence]
     secret_fd = None

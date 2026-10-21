@@ -74,6 +74,17 @@ class VaultTests(unittest.TestCase):
         for ancestor in (local, share):
             self.assertEqual(ancestor.stat().st_mode & 0o7777, 0o775)
 
+    def test_init_and_run_share_one_unlock_and_persist_the_created_credential(self):
+        fresh = Path(self.directory.name) / "first-run.yq"
+        # One inherited passphrase is consumed once; a second read would get
+        # EOF and fail. Normal persistent request-bound approval remains active.
+        with daemon("init", vault=fresh, passphrase=PASSWORD) as (process, path, _), deadline(20), open_device(path) as device:
+            credential = approved(process, lambda: register(Ctap2(device), resident=True)).auth_data.credential_data
+        with daemon("run", vault=fresh, passphrase=PASSWORD) as (process, path, _), deadline(15), open_device(path) as device:
+            digest = os.urandom(32)
+            assertion = approved(process, lambda: Ctap2(device).get_assertion("example.test", digest, allow(credential)))
+            credential.public_key.verify(assertion.auth_data + digest, assertion.signature)
+
     def test_restart_lock_metadata_and_exact_deletion(self):
         with daemon("run", vault=self.path, passphrase=PASSWORD) as (process, path, unique), deadline(25), open_device(path) as device:
             credential = approved(process, lambda: register(Ctap2(device), resident=True)).auth_data.credential_data
