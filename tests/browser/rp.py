@@ -14,6 +14,8 @@ import threading
 import time
 
 from fido2.server import Fido2Server
+from fido2.attestation import Attestation, AttestationType
+from fido2.attestation.base import InvalidAttestation
 from fido2.webauthn import AttestationObject, AuthenticatorData, CollectedClientData
 from fido2 import features
 
@@ -38,16 +40,37 @@ def decode(value):
 
 
 class Fixture:
-    def __init__(self):
+    def __init__(self, require_trusted_attestation=False):
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.http.fixture = self
         self.origin = f"http://localhost:{self.http.server_port}"
-        self.server = Fido2Server({"id": "localhost", "name": "YubiQuity test RP"},
-                                  attestation="none", verify_origin=lambda origin: origin == self.origin)
+        self.last_attestation = None
+        self.server = Fido2Server(
+            {"id": "localhost", "name": "YubiQuity test RP"},
+            attestation="direct" if require_trusted_attestation else "none",
+            verify_origin=lambda origin: origin == self.origin,
+            verify_attestation=self.reject_untrusted_attestation if require_trusted_attestation else None,
+        )
         self.pending = {}
         self.credentials = {}
         self.lock = threading.Lock()
         self.thread = threading.Thread(target=self.http.serve_forever, daemon=True)
+
+    def reject_untrusted_attestation(self, attestation, client_hash):
+        # Negative-policy fixture only, not a manufacturer trust store. A direct
+        # conveyance preference alone does not enforce trust in python-fido2.
+        try:
+            result = Attestation.for_type(attestation.fmt)().verify(
+                attestation.att_stmt, attestation.auth_data, client_hash,
+            )
+        except InvalidAttestation as error:
+            raise ValueError("invalid attestation statement") from error
+        self.last_attestation = {"fmt": attestation.fmt, "type": result.attestation_type.name,
+                                 "certificates": len(result.trust_path)}
+        if result.attestation_type in (AttestationType.NONE, AttestationType.SELF) or not result.trust_path:
+            raise ValueError("trusted manufacturer attestation required")
+        # Never accept a chain merely because it exists or is self-consistent.
+        raise ValueError("no trusted manufacturer roots configured in this negative fixture")
 
     def __enter__(self):
         self.thread.start()

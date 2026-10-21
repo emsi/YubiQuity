@@ -121,6 +121,7 @@ Verified in this container on 2026-10-20:
 - Rust/Cargo 1.99.1, rustfmt, Clippy, C/C++ build tools, libudev/OpenSSL development headers.
 - `fido2-tools` 1.14.0 and `python3-fido2` 1.1.2; both discover the temporary UHID device and exercise real FIDO commands.
 - Firefox 158.0.1 registration/login, resident/PIN-required UV, persistent restart and two-account selection pass. Its user-namespace sandbox probe reports `EPERM`.
+- Separately installed Firefox ESR 153.5.1esr also passes basic/resident/PIN, account selection, persistence/service and negative/recovery scenarios with the same daemon. Its namespace probe reports the same warning. See the [browser/package matrix](test-report.md#browserpackage-matrix).
 - Chrome for Testing and matching ChromeDriver 155.0.8059.84 are installed. Chrome refuses to launch under the current container policy with “No usable sandbox.”
 
 Chrome's failure is independent of UHID. It requires a compatible container/host sandbox policy or running the stock browser on the host. Do not use `--no-sandbox` or disable browser security preferences to count a test as passing. Diagnose the host's seccomp/AppArmor/user-namespace policy before choosing a narrowly scoped correction. The simplest immediate topology is the daemon in the container and ordinary browsers on the host.

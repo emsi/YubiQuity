@@ -22,6 +22,7 @@ jobs:
           rustup show active-toolchain
       - name: Format, lint and test
         run: |
+          bash -n scripts/install-dev-tools.sh scripts/install-firefox-esr.sh
           cargo fmt --all -- --check
           cargo fmt --manifest-path fuzz/Cargo.toml -- --check
           cargo clippy --all-targets --locked -- -D warnings
@@ -30,7 +31,7 @@ jobs:
           cargo build --locked
           /usr/bin/python3 tests/browser/test_rp.py
           /usr/bin/python3 tests/vault_crypto.py
-          udevadm verify --resolve-names=never packaging/udev/72-yubiquity.rules
+          /usr/bin/python3 tests/packaging.py
       - name: Audit production and fuzz dependencies
         run: |
           cargo install cargo-audit --version 0.22.2 --locked

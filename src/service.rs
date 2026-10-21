@@ -181,6 +181,21 @@ impl Drop for Worker {
     }
 }
 
+/// Own the attachment lifetime, including every early `?` return. Rust drops
+/// fields in declaration order after this Drop body: stop work, detach HID,
+/// then join the worker and clear its authenticator state. A transport/control
+/// error must not leave a device attached while waiting for worker cleanup.
+struct Attachment<D> {
+    device: D,
+    worker: Worker,
+}
+
+impl<D> Drop for Attachment<D> {
+    fn drop(&mut self) {
+        self.worker.shutdown.store(true, Ordering::Release);
+    }
+}
+
 enum Input {
     Line(String),
     End,
@@ -302,9 +317,14 @@ fn run_inner<S: Store + 'static>(
     shutdown: Arc<AtomicBool>,
     mut control: Option<(&mut control::Server, RequestId)>,
 ) -> Result<Option<RequestId>> {
-    let mut device = Device::create(options.node_helper.as_deref())?;
+    let device = Device::create(options.node_helper.as_deref())?;
     let clock = Instant::now();
-    let worker = Worker::start(authenticator, clock);
+    let mut attachment = Attachment {
+        device,
+        worker: Worker::start(authenticator, clock),
+    };
+    let device = &mut attachment.device;
+    let worker = &attachment.worker;
     let input = (control.is_none() && options.test_presence.is_none()).then(input_reader);
     let mut input_ended = false;
     let mut fatal_storage = false;
@@ -535,8 +555,7 @@ fn run_inner<S: Store + 'static>(
         cancel.store(true, Ordering::Release);
     }
     drop(approval);
-    drop(device); // detach before waiting for any worker cleanup
-    drop(worker);
+    drop(attachment); // identical detach-before-join ordering on all exit paths
     if fatal_storage {
         anyhow::bail!("vault write failed; authenticator detached");
     }
@@ -551,6 +570,53 @@ mod tests {
     use crate::hid;
     use crate::store::MemoryStore;
     use ciborium::Value;
+
+    #[test]
+    fn attachment_detaches_before_joining_worker_on_success_and_error() {
+        struct DetachProbe {
+            shutdown: Arc<AtomicBool>,
+            detached: mpsc::Sender<()>,
+        }
+        impl Drop for DetachProbe {
+            fn drop(&mut self) {
+                assert!(self.shutdown.load(Ordering::Acquire));
+                // If the worker was joined first, its bounded wait would expire
+                // and this send would fail. No real HID or timing race is needed.
+                self.detached.send(()).expect("detach must precede join");
+            }
+        }
+        for fail in [false, true] {
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let (detached, receive) = mpsc::channel();
+            let (_, events) = mpsc::channel();
+            let join = std::thread::spawn(move || {
+                receive
+                    .recv_timeout(Duration::from_secs(3))
+                    .expect("attachment must detach before worker cleanup");
+            });
+            let result = (|| -> Result<()> {
+                let _attachment = Attachment {
+                    device: DetachProbe {
+                        shutdown: shutdown.clone(),
+                        detached,
+                    },
+                    worker: Worker {
+                        input: None,
+                        events,
+                        shutdown: shutdown.clone(),
+                        invalidation: Arc::new(AtomicU64::new(0)),
+                        join: Some(join),
+                    },
+                };
+                if fail {
+                    Err(anyhow::anyhow!("injected service I/O failure"))?;
+                }
+                Ok(())
+            })();
+            assert_eq!(result.is_err(), fail);
+            assert!(shutdown.load(Ordering::Acquire));
+        }
+    }
 
     struct Approve;
     impl RequestContext for Approve {

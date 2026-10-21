@@ -71,23 +71,30 @@ class IsolatedDisplay:
         from PIL import ImageGrab
         ImageGrab.grab(xdisplay=self.display).save(self.artifacts / f"{label}-pin-dialog.png")
 
-    def type_test_pin(self):
-        subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "50", "1234"], env=self.env, check=True, timeout=3)
+    def type_test_pin(self, pin="1234"):
+        if pin not in ("1234", "0000"):
+            raise ValueError("only public disposable-test PIN values are accepted")
+        subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+a"], env=self.env, check=True, timeout=3)
+        subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "50", pin], env=self.env, check=True, timeout=3)
         subprocess.run(["xdotool", "key", "--clearmodifiers", "Return"], env=self.env, check=True, timeout=3)
 
-    def select_test_account(self, index):
+    def select_test_account(self, index, version):
         if index not in (0, 1):
             raise ValueError("the fixture account selector accepts only indexes 0 and 1")
         # Firefox's ordinary account popup assigns numeric access keys. The
         # second account is inside its split-button menu, so open that menu
-        # first. Coordinates are for the tested en-US Firefox 158 popup on this
-        # fixed test display, captured in the preceding screenshot. A changed
-        # browser layout must fail the subsequent independent identity check.
+        # first. Coordinates are for inspected en-US stable/ESR popups on this
+        # fixed display, not authenticator protocol branches. Unknown layouts
+        # fail explicitly; the RP independently verifies the chosen account.
         if index == 1:
-            subprocess.run(["xdotool", "mousemove", "590", "153", "click", "1"], env=self.env, check=True, timeout=3)
+            layouts = {153: ((562, 155), (538, 187)), 158: ((590, 153), (560, 185))}
+            positions = layouts.get(int(version.split(".")[0]))
+            if positions is None:
+                raise ValueError(f"inspect the native account-menu layout for Firefox {version} before automating it")
+            subprocess.run(["xdotool", "mousemove", *map(str, positions[0]), "click", "1"], env=self.env, check=True, timeout=3)
             time.sleep(0.2)
             self.screenshot(f"account-menu-{time.time_ns()}")
-            subprocess.run(["xdotool", "mousemove", "560", "185", "click", "1"], env=self.env, check=True, timeout=3)
+            subprocess.run(["xdotool", "mousemove", *map(str, positions[1]), "click", "1"], env=self.env, check=True, timeout=3)
         else:
             subprocess.run(["xdotool", "key", "--clearmodifiers", "alt+0"], env=self.env, check=True, timeout=3)
 
@@ -101,7 +108,17 @@ class WebDriverFailure(RuntimeError):
 
 class WebDriver:
     def __init__(self, family, artifacts, headed=False, display=None):
+        if family not in ("firefox", "chrome"):
+            raise ValueError("unsupported browser family")
         self.family = family
+        # Select stock distribution/ESR binaries without replacing project
+        # symlinks, changing browser flags, or changing the authenticator mode.
+        driver_name = "geckodriver" if family == "firefox" else "chromedriver"
+        self.binary = Path(os.environ.get(f"YUBIQUITY_{family.upper()}_BINARY", BIN / f"yubiquity-{family}")).absolute()
+        self.driver = Path(os.environ.get(f"YUBIQUITY_{family.upper()}_DRIVER", BIN / f"yubiquity-{driver_name}")).absolute()
+        for executable in (self.binary, self.driver):
+            if not executable.is_file() or not os.access(executable, os.X_OK):
+                raise ValueError(f"not an executable file: {executable}")
         self.label = f"{family}-{time.time_ns()}"
         self.artifacts = artifacts
         self.headed = headed
@@ -135,14 +152,14 @@ class WebDriver:
         self.endpoint = f"http://127.0.0.1:{port}"
         self.log = (self.artifacts / f"{self.label}-driver.log").open("w")
         if self.family == "firefox":
-            args = [str(BIN / "yubiquity-geckodriver"), "--host", "127.0.0.1", "--port", str(port)]
+            args = [str(self.driver), "--host", "127.0.0.1", "--port", str(port)]
             capabilities = {"browserName": "firefox", "moz:firefoxOptions": {
-                "binary": str(BIN / "yubiquity-firefox"), "args": [] if self.headed else ["-headless"],
+                "binary": str(self.binary), "args": [] if self.headed else ["-headless"],
             }}
         else:
-            args = [str(BIN / "yubiquity-chromedriver"), f"--port={port}", "--allowed-ips=127.0.0.1"]
+            args = [str(self.driver), f"--port={port}", "--allowed-ips=127.0.0.1"]
             capabilities = {"browserName": "chrome", "goog:chromeOptions": {
-                "binary": str(BIN / "yubiquity-chrome"), "args": [] if self.headed else ["--headless=new"],
+                "binary": str(self.binary), "args": [] if self.headed else ["--headless=new"],
             }}
         # Preserve browser dialogs until the test explicitly interacts with them;
         # WebDriver's default is to dismiss them when polling page script state.
@@ -162,7 +179,10 @@ class WebDriver:
                     time.sleep(0.1)
             result = self.request("POST", "/session", {"capabilities": {"alwaysMatch": capabilities}})
             self.session = result["sessionId"]
-            self.record({"event": "started", "version": result["capabilities"].get("browserVersion"), "headed": self.headed})
+            self.version = result["capabilities"]["browserVersion"]
+            self.record({"event": "started", "version": result["capabilities"].get("browserVersion"),
+                         "headed": self.headed, "binary": str(self.binary), "driver": str(self.driver),
+                         "binary_resolved": str(self.binary.resolve()), "driver_resolved": str(self.driver.resolve())})
             print(f"{self.family}: {result['capabilities'].get('browserVersion')}", flush=True)
             return self
         except BaseException:
@@ -204,10 +224,13 @@ class WebDriver:
     def navigate(self, origin):
         self.command("POST", "/url", {"url": origin})
 
-    def ceremony(self, kind, *, enter_pin=False, account_choice=None, **settings):
+    def ceremony(self, kind, *, enter_pin=False, pin_sequence=None, account_choice=None,
+                 expected_error=None, error_contains=None, during_wait=None, **settings):
         if account_choice is not None and (self.family != "firefox" or self.display is None):
             raise ValueError("account popup automation currently requires Firefox on an isolated display")
-        self.script("window.settings=Object.assign(window.settings,arguments[0]);window.result=null", settings)
+        pins = list(pin_sequence) if pin_sequence is not None else (["1234"] if enter_pin else [])
+        self.last_pin_prompts = []
+        self.script("window.settings=Object.assign({username:'alice',resident:false,discoverable:false,uv:'discouraged'},arguments[0]);window.result=null", settings)
         element = self.command("POST", "/element", {"using": "css selector", "value": "#" + kind})
         self.command("POST", f"/element/{element[ELEMENT]}/click", {})
         end = time.monotonic() + 40
@@ -219,7 +242,7 @@ class WebDriver:
                 if error.code == "unexpected alert open" and pin_sent_at is not None and time.monotonic() - pin_sent_at < 1:
                     time.sleep(0.1)
                     continue
-                if error.code != "unexpected alert open" or not enter_pin:
+                if error.code != "unexpected alert open" or not pins:
                     raise
                 message = self.command("GET", "/alert/text")
                 if "PIN" not in message:
@@ -229,19 +252,32 @@ class WebDriver:
                 self.display.screenshot(f"{self.family}-{kind}-{time.time_ns()}")
                 # WebDriver identifies the actual password prompt but does not
                 # support typing into it. Send keys only on our isolated display.
-                self.display.type_test_pin()
-                enter_pin = False
+                self.display.type_test_pin(pins.pop(0))
+                self.last_pin_prompts.append(message)
+                self.record({"event": "native-pin-prompt", "attempt": len(self.last_pin_prompts), "message": message})
                 pin_sent_at = time.monotonic()
                 continue
             if result is not None:
-                if not result.get("ok"):
+                if pins:
+                    raise AssertionError("ceremony finished without exercising every requested PIN attempt")
+                if expected_error is not None:
+                    if result.get("ok") or (result.get("phase"), result.get("name")) != expected_error:
+                        raise AssertionError(f"expected {expected_error}, received {result}")
+                    if error_contains is not None and error_contains not in result.get("error", ""):
+                        raise AssertionError(f"expected error containing {error_contains!r}, received {result}")
+                    event = "expected-rejection"
+                elif not result.get("ok"):
                     raise AssertionError(f"{self.family} {kind}: {result}")
-                self.record({"event": "verified", "operation": kind, "settings": settings, "result": result})
+                else:
+                    event = "verified"
+                self.record({"event": event, "operation": kind, "settings": settings, "result": result})
                 print(f"{self.family} {kind}: {json.dumps(result)}", flush=True)
                 return result
+            if during_wait is not None:
+                during_wait(self)
             if account_choice is not None and pin_sent_at is not None and time.monotonic() - pin_sent_at > 1:
                 self.display.screenshot(f"{self.label}-account-{account_choice}")
-                self.display.select_test_account(account_choice)
+                self.display.select_test_account(account_choice, self.version)
                 self.record({"event": "native-account-choice", "index": account_choice})
                 account_choice = None
             time.sleep(0.1)
@@ -285,7 +321,8 @@ def main():
                 if args.pin_test:
                     assert registered["flags"] & 4 and logged_in["flags"] & 4
                 if family == "chrome" and "firefox" in families:
-                    browser.ceremony("authenticate", enter_pin=args.pin_test, username="firefox", discoverable=False)
+                    browser.ceremony("authenticate", enter_pin=args.pin_test, username="firefox", discoverable=False,
+                                     uv="required" if args.pin_test else "discouraged")
         if len(families) == 2:
             with WebDriver("firefox", artifacts, args.headed or args.pin_test, display) as browser:
                 browser.navigate(fixture.origin)

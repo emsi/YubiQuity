@@ -249,6 +249,7 @@ cgroup rule are described in [container setup](docs/container-uhid.md).
 cargo build --locked
 /usr/bin/python3 -m unittest discover -s tests -p '*integration.py' -v
 /usr/bin/python3 tests/vault_crypto.py
+/usr/bin/python3 tests/packaging.py
 ```
 
 These tests need Ubuntu's `python3-fido2`, `fido2-tools`, `/dev/uhid`, hidraw cgroup
@@ -262,6 +263,14 @@ Each storage test owns a private temporary vault, and failure tests include real
 OS write failures. Test daemons are serialized across runners in this workspace
 because browser discovery can otherwise select another test's FIDO device.
 
+`tests/packaging.py` is an offline check using systemd/udev 255 on Ubuntu 24.04.
+It verifies the exact user-unit contents with strict warning handling and checks
+that an intentionally invalid directive fails. If `~/.local/bin/yubiquity` is
+absent, it creates a temporary link to the debug build and removes only that
+link afterward; existing executables are not replaced. It uses a private runtime
+directory, does not start/enable a service, and never installs or applies udev
+rules. Actual host permissions and systemd runtime behavior remain separate gates.
+
 ## Browser tests
 
 ```bash
@@ -272,6 +281,7 @@ because browser discovery can otherwise select another test's FIDO device.
 /usr/bin/python3 tests/browser/persistence.py --browser firefox
 /usr/bin/python3 tests/browser/service.py
 /usr/bin/python3 tests/browser/accounts.py
+/usr/bin/python3 tests/browser/negative.py --browser firefox
 # Required cross-browser gate; currently fails at Chrome sandbox startup here:
 /usr/bin/python3 tests/browser/ceremonies.py --browser both
 ```
@@ -285,6 +295,36 @@ path with a disposable encrypted vault, kills the daemon, then verifies login
 through new daemon/browser instances against the same RP registration.
 `service.py` exercises the locked service with explicit CLI approvals, locks and
 re-unlocks it, then verifies saved-credential login in a fresh Firefox profile.
+`negative.py` checks cancelled/denied registration and login, stale approvals,
+excluded and unknown credentials, browser RP rejection, wrong-PIN recovery,
+and lock/detach during pending login followed by reattachment/recovery in the
+same browser session. It distinguishes a browser error
+from an RP rejection so an unrelated failure cannot satisfy an expected result.
+Its strict RP requests direct attestation and explicitly rejects the device's
+`none` result. This is a negative policy fixture, not a manufacturer trust store.
+The shared harness also accepts `--browser chrome`; that run still requires a
+working sandboxed Chrome environment and is not claimed to pass here.
+
+For another stock installation, set `YUBIQUITY_FIREFOX_BINARY` or
+`YUBIQUITY_CHROME_BINARY` to its executable path. Matching driver paths can be
+selected with `YUBIQUITY_FIREFOX_DRIVER` or `YUBIQUITY_CHROME_DRIVER`. These options
+apply to all browser harnesses and are recorded alongside the browser version;
+they select executables, not authenticator modes, browser preferences or flags.
+They do not bypass package confinement or make an unsupported launcher work.
+
+The optional ESR setup downloads exactly Mozilla's Linux x86-64 en-US archive,
+checks its SHA-256 against the release's `SHA256SUMS`, and leaves stable untouched:
+
+```bash
+bash scripts/install-firefox-esr.sh 153.5.1esr
+YUBIQUITY_FIREFOX_BINARY="$HOME/.local/share/yubiquity/browsers/firefox-153.5.1esr/firefox" \
+  /usr/bin/python3 tests/browser/ceremonies.py --browser firefox --pin-test
+```
+
+Use the same environment override for the account, negative, persistence and
+service scenarios. The script does not change the default Firefox symlink or
+your browser profiles. The selected release is pinned for replay; it is not a
+promise that this version remains current indefinitely.
 
 `--pin-test` configures the public test PIN `1234` using an independent FIDO client,
 then exercises the browser's real PIN-entry flow. It starts a separate Xvfb display
@@ -299,11 +339,12 @@ selects each account from Firefox's ordinary popup using native keyboard/mouse U
 The RP must verify the selected user handle, credential ID and UV flag. This
 UI automation is Firefox-specific; it does not change authenticator behavior
 and is not evidence of Chromium's still-unverified selection flow. The menu click
-coordinates match the tested en-US Firefox 158 layout on the isolated display;
-a different layout may need a harness update. Screenshots retain that evidence.
+coordinates match the inspected en-US Firefox 158 stable and 153 ESR layouts on
+the isolated display; unknown versions fail explicitly rather than guessing.
+A different layout may need a harness update. Screenshots retain that evidence.
 
 Logs, verified ceremony records, and PIN-dialog screenshots are retained under
-`target/browser-results/`. The installed browsers are Firefox 158.0.1 and Chrome
-for Testing 155.0.8059.84, with geckodriver 0.37.1 and matching ChromeDriver, under
+`target/browser-results/`. The installed browsers are Firefox 158.0.1, Firefox ESR
+153.5.1esr, and Chrome for Testing 155.0.8059.84, with geckodriver 0.37.1 and matching ChromeDriver, under
 `~/.local/share/yubiquity/browsers`. Existing installations/profiles are untouched.
 See the [test report](docs/test-report.md) for verified scope and remaining gates.

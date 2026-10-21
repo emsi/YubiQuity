@@ -5,6 +5,7 @@ Requires a built debug binary, /dev/uhid, sudo -n, the hidraw cgroup rule,
 fido2-tools and python3-fido2. All devices/nodes belong to temporary daemons.
 """
 import contextlib
+import errno
 import fcntl
 import os
 from pathlib import Path
@@ -138,6 +139,23 @@ def _daemon(command="probe", test_presence=None, *, vault=None, passphrase=None,
 
 
 class TransportTests(unittest.TestCase):
+    def test_unsupported_control_reports_fail_promptly_and_transport_recovers(self):
+        with daemon() as (_, path, _), deadline(8):
+            fd = os.open(path, os.O_RDWR | os.O_CLOEXEC)
+            try:
+                # Linux HIDIOCSFEATURE/HIDIOCGFEATURE use the control channel,
+                # not ordinary CTAPHID output reports. Both must receive an
+                # explicit UHID error reply instead of hanging a hidraw caller.
+                for number in (0x06, 0x07):
+                    request = (3 << 30) | (2 << 16) | (ord("H") << 8) | number
+                    with self.subTest(ioctl=number), self.assertRaises(OSError) as caught:
+                        fcntl.ioctl(fd, request, bytearray(2), True)
+                    self.assertEqual(caught.exception.errno, errno.EIO)
+            finally:
+                os.close(fd)
+            with open_device(path) as device:
+                self.assertEqual(device.call(CTAPHID.PING, b"control-recovery"), b"control-recovery")
+
     def test_independent_clients_and_maximum_ping(self):
         with daemon() as (_, path, unique), deadline(15):
             descriptors = [d for d in list_descriptors() if d.path == path]

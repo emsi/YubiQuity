@@ -21,18 +21,20 @@ class RpTests(unittest.TestCase):
         self.id = os.urandom(32)
         self.credential = AttestedCredentialData.create(b"\0" * 16, self.id, ES256.from_cryptography_key(self.key.public_key()))
 
-    def response(self, kind, *, origin=None, challenge=None, rp="localhost", flags=None, username="alice", uv="discouraged", cross_origin=False):
-        pending = self.fixture.options(kind, {"username": username, "uv": uv, "discoverable": kind != "register"})
+    def response(self, kind, *, origin=None, challenge=None, rp="localhost", flags=None, username="alice", uv="discouraged", cross_origin=False, fixture=None, fmt="none"):
+        fixture = self.fixture if fixture is None else fixture
+        pending = fixture.options(kind, {"username": username, "uv": uv, "discoverable": kind != "register"})
         client = CollectedClientData.create(
             "webauthn.create" if kind == "register" else "webauthn.get",
             challenge or pending["options"]["publicKey"]["challenge"],
-            origin or self.fixture.origin, cross_origin=cross_origin,
+            origin or fixture.origin, cross_origin=cross_origin,
         )
         flags = (0x41 if kind == "register" else 1) if flags is None else flags
         data = AuthenticatorData.create(hashlib.sha256(rp.encode()).digest(), flags, 0, self.credential if kind == "register" else b"")
         response = {"requestId": pending["requestId"], "rawId": encode(self.id), "clientDataJSON": encode(client)}
         if kind == "register":
-            response["attestationObject"] = encode(AttestationObject.create("none", data, {}))
+            statement = {} if fmt == "none" else {"alg": -7, "sig": self.key.sign(data + client.hash, ec.ECDSA(hashes.SHA256()))}
+            response["attestationObject"] = encode(AttestationObject.create(fmt, data, statement))
         else:
             response.update(authenticatorData=encode(data), signature=encode(self.key.sign(data + client.hash, ec.ECDSA(hashes.SHA256()))), userHandle=encode(b"alice"))
         return response
@@ -83,6 +85,27 @@ class RpTests(unittest.TestCase):
             with self.subTest(headers=headers), self.assertRaises(HTTPError) as error:
                 urlopen(Request(self.fixture.origin, headers=headers), timeout=2)
             self.assertEqual(error.exception.code, 403)
+
+    def test_trusted_attestation_policy_rejects_none_and_valid_self_attestation(self):
+        with Fixture(require_trusted_attestation=True) as strict:
+            options = strict.options("register", {})
+            self.assertEqual(options["options"]["publicKey"]["attestation"], "direct")
+            for fmt, expected_type in (("none", "NONE"), ("packed", "SELF")):
+                response = self.response("register", fixture=strict, fmt=fmt)
+                with self.subTest(fmt=fmt), self.assertRaisesRegex(ValueError, "trusted manufacturer attestation required"):
+                    strict.complete("register", response)
+                self.assertEqual(strict.last_attestation, {"fmt": fmt, "type": expected_type, "certificates": 0})
+                self.assertFalse(strict.credentials)
+                with self.assertRaisesRegex(ValueError, "replayed"):
+                    strict.complete("register", response)
+
+    def test_attestation_policy_does_not_replace_origin_challenge_or_uv_verification(self):
+        with Fixture(require_trusted_attestation=True) as strict:
+            for override in ({"origin": "http://evil.test"}, {"challenge": os.urandom(32)}, {"uv": "required"}):
+                with self.subTest(override=override), self.assertRaises(ValueError):
+                    strict.complete("register", self.response("register", fixture=strict, **override))
+                self.assertIsNone(strict.last_attestation)
+                self.assertFalse(strict.credentials)
 
 
 if __name__ == "__main__":

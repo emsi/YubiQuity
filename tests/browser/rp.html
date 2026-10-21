@@ -5,6 +5,7 @@
 <p>Uses the browser's normal external security-key path. No virtual authenticator API.</p>
 <button id="register">Register</button>
 <button id="authenticate">Authenticate</button>
+<button id="cancel">Cancel pending operation</button>
 <pre id="result"></pre>
 <script>
 const from64 = value => Uint8Array.from(atob(value.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4-value.length%4)%4)), ch => ch.charCodeAt(0));
@@ -19,6 +20,8 @@ async function post(path, body) {
 }
 async function ceremony(kind) {
     window.result = null;
+    window.abortController = new AbortController();
+    let phase = 'options';
     try {
         const pending = await post('/'+kind+'/options', window.settings);
         const options = pending.options.publicKey;
@@ -27,21 +30,32 @@ async function ceremony(kind) {
         for (const field of ['excludeCredentials','allowCredentials']) {
             if (options[field]) for (const credential of options[field]) credential.id = from64(credential.id);
         }
+        // Explicit negative-test inputs, exercised by the ordinary WebAuthn API.
+        if (window.settings.wrongRp) {
+            if (kind === 'register') options.rp.id = 'unrelated.invalid';
+            else options.rpId = 'unrelated.invalid';
+        }
+        if (window.settings.unknownCredential && kind === 'authenticate') {
+            options.allowCredentials = [{type:'public-key', id:crypto.getRandomValues(new Uint8Array(32))}];
+        }
+        phase = 'browser';
         let credential;
         if (kind === 'register') {
             options.user.id = from64(options.user.id);
-            credential = await navigator.credentials.create({publicKey: options});
-        } else credential = await navigator.credentials.get({publicKey: options});
+            credential = await navigator.credentials.create({publicKey: options, signal:window.abortController.signal});
+        } else credential = await navigator.credentials.get({publicKey: options, signal:window.abortController.signal});
+        phase = 'complete';
         const body = {requestId: pending.requestId, rawId: to64(credential.rawId), clientDataJSON: to64(credential.response.clientDataJSON)};
         for (const field of ['attestationObject','authenticatorData','signature','userHandle']) {
             if (credential.response[field] != null) body[field] = to64(credential.response[field]);
         }
         window.result = await post('/'+kind+'/complete', body);
     } catch (error) {
-        window.result = {ok:false, name:error.name, error:error.message};
+        window.result = {ok:false, phase, name:error.name, error:error.message};
     }
     document.getElementById('result').textContent = JSON.stringify(window.result, null, 2);
 }
 document.getElementById('register').onclick = () => ceremony('register');
 document.getElementById('authenticate').onclick = () => ceremony('authenticate');
+document.getElementById('cancel').onclick = () => window.abortController?.abort();
 </script>
