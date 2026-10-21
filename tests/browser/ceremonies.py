@@ -12,6 +12,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import select
 import signal
 import socket
@@ -122,9 +123,23 @@ class IsolatedDisplay:
         screenshot.save(self.artifacts / f"chrome-pin-{time.time_ns()}.png")
         return message
 
-    def chrome_confirm_account(self, version, expected_user):
+    def chrome_submit_typed_pin(self, version):
+        screenshot, message, normalized, _ = self.chrome_dialog(version)
+        if ("pin required" not in normalized or "pin for your security key" not in normalized
+                or any(word in normalized for word in ("incorrect", "wrong", "invalid"))):
+            return None
+        # The first Enter can land before a newly opened sheet accepts it.
+        # Caller waits for settling and bounds retries; do not retype a PIN or
+        # submit an incorrect-PIN retry screen. Only our own Xvfb is addressed.
+        screenshot.save(self.artifacts / f"chrome-pin-submit-{time.time_ns()}.png")
+        subprocess.run(["xdotool", "key", "--clearmodifiers", "Return"],
+                       env=self.env, check=True, timeout=3)
+        return message
+
+    def chrome_confirm_account(self, version, expected_user, rp_id="localhost"):
         screenshot, message, normalized, words = self.chrome_dialog(version)
-        if ("choose a passkey" in normalized and "for localhost" in normalized
+        domain_matches = re.search(r"\bfor " + re.escape(rp_id) + r"\??(?:\s|$)", normalized) is not None
+        if ("choose a passkey" in normalized and domain_matches
                 and "security key" in normalized):
             matches = [word for word in words if word["text"].lower() == expected_user.lower()
                        and float(word["conf"]) >= 60]
@@ -139,7 +154,7 @@ class IsolatedDisplay:
             subprocess.run(["xdotool", "mousemove", str(x), str(y), "click", "1"],
                            env=self.env, check=True, timeout=3)
             return message
-        if ("use a saved passkey for localhost" not in normalized
+        if ("use a saved passkey for " not in normalized or not domain_matches
                 or "security key" not in normalized
                 or expected_user.lower() not in normalized.split()):
             return None

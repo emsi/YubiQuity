@@ -23,8 +23,8 @@ daemon crash/restart and a fresh browser profile, with PIN verification required
 The optional local service starts locked. Its same-user control client can unlock,
 inspect a pending request, explicitly approve/deny it, or lock/detach again.
 
-**This is still under development, not a completed release.** After container
-recreation with the supplied seccomp profile, Chrome for Testing 155.0.8059.84
+The planned baseline is implemented and validated for the recorded container
+and browser builds. After recreation with the supplied seccomp profile, Chrome for Testing 155.0.8059.84
 passes registration/login, required-PIN discoverable credentials, two-account
 selection, encrypted-vault crash recovery, the locked-service path and the full
 local negative/recovery suite. Firefox/Chrome credential reuse
@@ -32,10 +32,14 @@ passes in both directions with and without required UV. Chrome reports active
 namespace and seccomp-BPF sandboxes; no added container capabilities or AppArmor
 relaxation was needed. See the [test report](docs/test-report.md#chrome-container-validation-2026-10-21).
 
-Agent host access remains excluded. Ordinary distribution packages,
-public-site smoke tests and deployment validation
-remain unfinished. Use disposable test accounts; positive test results are not
-a universal browser compatibility or security certification claim.
+Approved public-site smoke tests also pass in Firefox and Chrome: webauthn.io
+accepts required-PIN resident registration, username login and username-less login;
+Yubico's technical demo accepts registration and authentication.
+
+Agent host access remains excluded. Ordinary distribution/confined browser
+packages and actual host systemd/udev deployment remain unverified. This is still
+a software testing tool for disposable accounts, not a universally compatible,
+certified or hardware-protected authenticator.
 
 The separate `probe` command deliberately provides only transport and GetInfo,
 without advertising credentials or PIN. No mode advertises built-in biometric UV
@@ -104,6 +108,20 @@ always uses explicit terminal approval: type `approve TOKEN` or `deny TOKEN` for
 the displayed request. Type `lock` or `quit`, or press Ctrl-C, to detach and release
 the vault. Restart with `run` to unlock it again. There is no automatic approval
 switch for persistent operation.
+
+Before testing PIN-required passkeys, configure the authenticator PIN once while
+the vault is unlocked and attached. In another terminal, substitute the exact
+current hidraw path reported for this YubiQuity device (not a physical key):
+
+```bash
+fido2-token -S /dev/hidrawN
+# Later, to change an existing PIN:
+fido2-token -C /dev/hidrawN
+```
+
+These commands prompt for the PIN; do not put it in arguments. The PIN is separate
+from the vault passphrase and persists in the encrypted vault. See the
+[libfido2 command reference](https://developers.yubico.com/libfido2/Manuals/fido2-token.html).
 
 Stop the daemon before listing or deleting credentials; all commands take the
 same exclusive vault lock. Metadata is JSON, with account names hidden by default.
@@ -285,6 +303,7 @@ rules. Actual host permissions and systemd runtime behavior remain separate gate
 ```bash
 /usr/bin/python3 tests/browser/test_rp.py
 /usr/bin/python3 tests/browser/test_ui.py
+/usr/bin/python3 tests/browser/test_public_sites.py
 /usr/bin/python3 tests/browser/ceremonies.py --browser firefox
 /usr/bin/python3 tests/browser/ceremonies.py --browser firefox --pin-test
 /usr/bin/python3 tests/browser/ceremonies.py --browser firefox --pin-test --attach-after-start
@@ -372,8 +391,31 @@ coordinates match the inspected en-US Firefox 158 stable and 153 ESR layouts on
 the isolated display; unknown versions fail explicitly rather than guessing.
 A different layout may need a harness update. Screenshots retain that evidence.
 
+### Opt-in public-site smoke tests
+
+This command **creates public registrations** on the two named demo services.
+Run only after authorizing those writes; it is never run by CI:
+
+```bash
+/usr/bin/python3 tests/browser/public_sites.py --allow-public-registration --browser both --site both
+```
+
+Select `--site webauthn.io` or `--site yubico`, and `--browser firefox` or
+`--browser chrome` for individual runs. Each combination owns a temporary encrypted
+vault and fresh browser profile. Webauthn.io receives a random test username;
+Yubico's technical demo uses its own disposable session identity. The harness
+uses the sites' existing forms/buttons/settings, approves only the expected
+RP/operation, types the public fixture PIN on its own display, and checks the
+sites' actual success pages. It does not replace site JavaScript or WebAuthn APIs.
+
+The local vaults/keys are removed after each run and cannot be recovered. Public
+registrations are not deleted by the harness and remain subject to the sites'
+retention policies (webauthn.io's profile currently states 24 hours). These are
+compatibility smoke tests, not an audit of either site's verifier. Offline
+`test_public_sites.py` tests authorization/evidence guards without contacting sites.
+
 Logs, verified ceremony records, and PIN-dialog screenshots are retained under
 `target/browser-results/`. The installed browsers are Firefox 158.0.1, Firefox ESR
 153.5.1esr, and Chrome for Testing 155.0.8059.84, with geckodriver 0.37.1 and matching ChromeDriver, under
 `~/.local/share/yubiquity/browsers`. Existing installations/profiles are untouched.
-See the [test report](docs/test-report.md) for verified scope and remaining gates.
+See the [test report](docs/test-report.md) for verified scope and validation boundaries.

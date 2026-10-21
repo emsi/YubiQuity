@@ -33,6 +33,27 @@ class UiTests(unittest.TestCase):
         self.assertIn("Incorrect", self.display.chrome_pin_prompt("155.0", retry=True))
 
     @patch("ceremonies.subprocess.run")
+    def test_public_account_confirmation_requires_exact_requested_domain(self, run):
+        for domain in ("localhost", "webauthn.io.example", "other.example"):
+            self.dialog(f"Use a saved passkey for {domain} alice USB security key")
+            self.assertIsNone(self.display.chrome_confirm_account("155.0", "alice", "webauthn.io"))
+        run.assert_not_called()
+        self.dialog("Use a saved passkey for webauthn.io alice USB security key")
+        self.assertIsNotNone(self.display.chrome_confirm_account("155.0", "alice", "webauthn.io"))
+        self.assertEqual(run.call_args.kwargs["env"], self.display.env)
+
+    @patch("ceremonies.subprocess.run")
+    def test_pin_resubmission_does_not_type_or_accept_an_error_sheet(self, run):
+        for text in ("PIN required", "Choose a passkey", "PIN required Enter the PIN for your security key Incorrect PIN"):
+            self.dialog(text)
+            self.assertIsNone(self.display.chrome_submit_typed_pin("155.0"))
+        run.assert_not_called()
+        self.dialog("PIN required Enter the PIN for your security key")
+        self.assertIsNotNone(self.display.chrome_submit_typed_pin("155.0"))
+        self.assertEqual(run.call_args.args[0], ["xdotool", "key", "--clearmodifiers", "Return"])
+        self.assertEqual(run.call_args.kwargs["env"], self.display.env)
+
+    @patch("ceremonies.subprocess.run")
     def test_confirmation_requires_local_fixture_and_exact_account(self, run):
         text = "Use a saved passkey for localhost alice USB security key"
         self.dialog(text)
@@ -68,7 +89,7 @@ class UiTests(unittest.TestCase):
     def test_chooser_selects_only_the_requested_word_box(self, run):
         words = [{"text": name, "conf": "95", "left": "65", "top": str(top),
                   "width": "40", "height": "20"} for name, top in (("bob", 240), ("alice", 305))]
-        self.dialog("Choose a passkey for localhost bob USB security key alice USB security key", words)
+        self.dialog("Choose a passkey Which passkey do you want to use for localhost? bob USB security key alice USB security key", words)
         self.assertIsNotNone(self.display.chrome_confirm_account("155.0", "alice"))
         self.assertEqual(run.call_args.args[0], ["xdotool", "mousemove", "395", "405", "click", "1"])
 

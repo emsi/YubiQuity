@@ -1,8 +1,9 @@
 # Development test report
 
-Core evidence: 2026-10-20; container/browser update: 2026-10-21. This is progress
-evidence, not a completed release or FIDO
-certification report. The full acceptance gates remain in the
+Core evidence: 2026-10-20, rerun/extended on 2026-10-21; container/browser/public-site
+validation: 2026-10-21. The planned software baseline is implemented and validated
+within the recorded scope. This is not a FIDO certification or hardware-security
+report. The acceptance gates and explicit exclusions are in the
 [implementation plan](../firefox-virtual-fido2-plan.md).
 
 Scope update, 2026-10-21: the user excluded host access and authorized Firefox-only
@@ -50,9 +51,9 @@ account sheet needs a recognized selection/Continue click with settling time.
 Those failures and interrupted obsolete-harness runs are not counted as passes.
 The final adapter recognizes native text/account word boxes on the test-owned
 display, rejects unknown UI versions and verifies all successful results at the RP.
-Chrome's complete negative suite remains unfinished: an exploratory run passed
-registration abort, then was interrupted while investigating the native denial UI.
-No public-site registration was performed.
+At this initial stage, Chrome's complete negative suite was unfinished: an
+exploratory run passed registration abort, then was interrupted while investigating
+the native denial UI. Subsequent completed results follow below.
 
 ### Completed local negative/recovery coverage (2026-10-21)
 
@@ -83,7 +84,51 @@ waiting for concurrent browser tests). Two additional real-hidraw tests pass:
 oversized/empty/invalid-sequence frames recover on the same channel, and 64
 malformed CBOR requests fail without presence prompts while GetInfo/PING continue
 working. These are bounded-input/recovery checks, not an exhaustive memory audit.
-Public-site tests were subsequently authorized and are pending execution.
+The expanded full real-device suite subsequently passed all 29 cases in 140.011
+seconds. Eleven UI guards and four new offline public-test guards pass. Final
+required-UV Firefox/Chrome bidirectional credential reuse passed again in
+`1792592168744844927` after the public-site UI adapter changes.
+
+## Public-site smoke tests (2026-10-21)
+
+The user explicitly authorized disposable registrations on
+[webauthn.io](https://webauthn.io/) and
+[Yubico's technical demo](https://demo.yubico.com/webauthn-technical).
+The final combined run passed all ten ceremonies in
+`target/browser-results/public-1792592188448034133/`:
+
+| Site | Firefox 158.0.1 | Chrome for Testing 155.0.8059.84 |
+|---|---|---|
+| webauthn.io | Resident registration, username login, username-less login; all require native PIN | Same three flows pass |
+| Yubico technical demo | Registration and authentication with its default non-PIN flow | Same two flows pass |
+
+Webauthn.io settings were ES256, external/cross-platform attachment, resident key
+required, registration/authentication UV required and attestation none. Its own
+success alert and authenticated profile for the generated username were observed.
+The username field was explicitly empty for the discoverable login. Yubico's own
+registration-completed and authentication-success pages were observed; this is not
+a Yubico manufacturer-attestation acceptance claim.
+
+Every combination used a disposable encrypted vault and fresh profile. Explicit
+local control approvals checked the RP ID and operation; actual PIN prompts,
+success-page snapshots and native screenshots were recorded. Chrome's namespace
+and seccomp status checks passed for both sessions. No page API/function was
+replaced, no browser security feature disabled, and no authenticator code changed.
+Public-site verification is observed through each site's UI; the stronger
+independent cryptographic checks remain the local RP/client tests.
+
+The opt-in public harness is not part of CI; four offline guards cover its required
+authorization flag, RP/operation binding, origin checks and evidence requirements.
+Initial harness failures (a Firefox navigation/PIN read race, an unsubmitted Chrome
+PIN sheet, and overly strict punctuation recognition in the local multi-account
+regression) are retained and not counted as passes. The final runs above address
+those cases with normal native UI interaction and read-only DOM observation.
+
+Temporary local vaults/keys were removed by test cleanup and are not recoverable.
+No existing user accounts were used. Remote demo registrations were not deleted;
+their retention belongs to each service (webauthn.io displays a 24-hour policy).
+Website labels such as “device-bound” or generic descriptions of secure hardware
+do not turn this implementation into hardware-backed or trusted-attested storage.
 
 ## Environment and versions
 
@@ -114,7 +159,7 @@ No row implies support for arbitrary browsers or packages not tested here.
 |---|---|
 | Build and static checks | Cargo build/test, rustfmt and Clippy with warnings denied |
 | Protocol/unit tests | 52 tests: framing, timeouts, cancellation during signing, detach-before-worker-join on normal/error exits, CBOR bounds, commands, signatures, PIN, vault boundaries, CLI and local-control safety |
-| Real hidraw | 27 passed in a complete suite, using independent FIDO clients and actual vaults; includes unsupported GET/SET control-report errors followed by recovery, the real 30-second approval deadline, stale tokens, competing channels, foreground EOF lock and service control |
+| Real hidraw | 29 passed in the final complete suite, using independent FIDO clients and actual vaults; includes malformed frame/CBOR recovery, unsupported GET/SET control-report errors, real 30-second approval deadline, stale tokens, competing channels, foreground EOF lock and service control |
 | Dependency audits | Production and fuzz lockfiles: no known advisories or warnings using cargo-audit 0.22.2 and the recorded RustSec database revision |
 | Seeded parser fuzzing | Four ASan targets, 120-second budget each; original protocol campaigns total 10,310,701 executions, plus 7,547,998 for the new local-control parser, without a detected failure |
 | Independent vault crypto | Python Argon2/libsodium decrypts the Rust envelope, verifies header authentication, and creates a disposable payload accepted by Rust |
@@ -221,7 +266,7 @@ passed again in `accounts-1792533159672807618`. Browser executable/driver overri
 only select the test installation; they never alter the authenticator or disable
 browser security features.
 
-## Unverified or incomplete
+## Explicit validation boundaries
 
 | Check (including deferred coverage) | Current state |
 |---|---|
@@ -229,7 +274,7 @@ browser security features.
 | Browser hotplug | Firefox/Chrome before/after startup, crash/restart and pending-login removal/recovery verified for the recorded builds; other deployments remain unverified |
 | Storage deployment validation | Local-filesystem/crash tests pass; not a claim of tested power-loss behavior on every filesystem/storage stack |
 | Release packaging/matrix | Unit and scoped udev rules implemented; host application, systemd-user execution, ordinary stable distribution Chrome/Chromium and confined packages remain unverified; Mozilla ESR archive scenarios pass |
-| Broader release validation | Target deployment/browser matrix and agreed disposable public-site smoke tests remain; longer fuzz campaigns are additional assurance, and hosted CI execution has not been observed |
+| Broader release validation | The named public sites and selected browser matrix pass; other deployments and longer campaigns are additional coverage, and hosted CI execution has not been observed |
 
 In the pre-recreation environment, Firefox launched despite an `EPERM` warning from its user-namespace probe. That
 does not establish that every sandbox layer is available inside this container.
@@ -281,7 +326,8 @@ The checked-in CI workflow uses pinned checkout/artifact actions, read-only
 repository permissions, bounded jobs, no credentials, and no hardware tests that
 silently skip when permissions are absent. Its build/lint/test/audit/fuzz commands
 have passed locally; the workflow YAML parses, but no hosted CI execution is
-claimed. Browser and real-hidraw tests remain separately required release gates.
+claimed. Browser and real-hidraw gates were run separately with the results above;
+the portable CI job does not substitute for them.
 
 ## Local-service and deployment evidence
 
@@ -321,5 +367,6 @@ hardware key protection, trusted manufacturer attestation, resistance to a
 compromised local user/root/kernel, or concealment from host inspection. Persistent
 `run` encrypts saved state and keeps retries across restarts; `dev-run` remains
 ephemeral. Encrypted files can still be rolled back by a privileged/local attacker.
-There is no supported backup/export or recovery workflow. Keep accounts disposable
-while the remaining release gates are unfinished. Details: [vault design](vault.md).
+There is no supported backup/export or recovery workflow. Keep accounts disposable:
+the intended product is a software testing authenticator, not a production
+hardware-key replacement. Details: [vault design](vault.md).

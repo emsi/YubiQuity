@@ -1,6 +1,6 @@
 # Software FIDO2 Authenticator for Browsers
 
-Status: implementation in progress; sandboxed Chrome positive, negative/recovery and Firefox interoperability checks now pass in the recreated container (2026-10-21). Authorized public-site smoke tests and final audit remain. Agent host access is not authorized.
+Status: baseline implemented and validated for the authorized container and recorded Firefox/Chrome builds (2026-10-21), including local negative/recovery, cross-browser reuse and both approved public-site smoke tests. The requirement-by-requirement audit is complete in the ledger. Host deployment and other browser packages remain explicitly unverified; agent host access is not authorized.
 
 Progress and test evidence: [implementation ledger](docs/implementation-status.md).
 
@@ -265,4 +265,4 @@ Useful user input, but not a blocker for starting implementation:
 1. Which two or three sites or application flows matter most after the local RP passes?
 2. Any preference for the approval interface? Terminal approval is the first-release default; a desktop dialog can follow.
 
-Container UHID/hidraw access and sandboxed Chrome startup are verified after the user's recreation; the local Chrome error/recovery scenarios now pass. Continue with the authorized webauthn.io and Yubico technical-demo smoke tests, followed by the final requirement audit. No browser protocol patch, browser modification or agent host session is part of the design. See the [container setup](docs/container-uhid.md#applying-the-chrome-seccomp-profile) and [test report](docs/test-report.md#chrome-container-validation-2026-10-21) for the permission boundary and exact verified scope.
+Container UHID/hidraw access and sandboxed Chrome startup are verified after the user's recreation; local Chrome error/recovery and the authorized webauthn.io/Yubico technical-demo smoke tests pass. The final requirement audit records the completed baseline and explicit validation boundaries. No browser protocol patch, browser modification or agent host session is part of the design. See the [container setup](docs/container-uhid.md#applying-the-chrome-seccomp-profile) and [test report](docs/test-report.md#chrome-container-validation-2026-10-21) for the permission boundary and exact verified scope.

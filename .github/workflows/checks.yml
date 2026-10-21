@@ -31,6 +31,7 @@ jobs:
           cargo build --locked
           /usr/bin/python3 tests/browser/test_rp.py
           /usr/bin/python3 tests/browser/test_ui.py
+          /usr/bin/python3 tests/browser/test_public_sites.py
           /usr/bin/python3 tests/vault_crypto.py
           /usr/bin/python3 tests/packaging.py
           /usr/bin/python3 tests/container_seccomp.py

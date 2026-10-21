@@ -337,8 +337,9 @@ The current account can use passwordless root **inside the container**. It has n
 Development dependencies have been reinstalled after container recreation. Real UHID/hidraw traffic and independent FIDO discovery now pass in this container. The host's kernel/module setup and container launch flags still cannot be changed through the currently exposed interfaces.
 
 Transport, credentials, PIN, encrypted storage and a same-user control service
-are implemented. Firefox and independent-client tests pass within their recorded
-scope; Chromium and remaining release/deployment gates are not complete. See the
+are implemented. Firefox, sandboxed Chrome and independent-client tests pass
+within their recorded scope, including negative/recovery and approved public-site
+flows. Actual host deployment and other browser packages remain unverified. See the
 [implementation ledger](implementation-status.md).
 
 ## 6. Scoped device access on a normal Linux host
