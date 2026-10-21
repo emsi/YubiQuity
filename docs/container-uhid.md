@@ -124,7 +124,45 @@ Verified in this container on 2026-10-20:
 - Separately installed Firefox ESR 153.5.1esr also passes basic/resident/PIN, account selection, persistence/service and negative/recovery scenarios with the same daemon. Its namespace probe reports the same warning. See the [browser/package matrix](test-report.md#browserpackage-matrix).
 - Chrome for Testing and matching ChromeDriver 155.0.8059.84 are installed. Chrome refuses to launch under the current container policy with “No usable sandbox.”
 
-Chrome's failure is independent of UHID. It requires a compatible container/host sandbox policy or running the stock browser on the host. Do not use `--no-sandbox` or disable browser security preferences to count a test as passing. Diagnose the host's seccomp/AppArmor/user-namespace policy before choosing a narrowly scoped correction. The simplest immediate topology is the daemon in the container and ordinary browsers on the host.
+### Chrome sandbox research and current decision
+
+On 2026-10-21 the user excluded host access and authorized Firefox-only validation
+if Chrome cannot run with narrowly scoped container permissions. The current
+topology is the daemon and Firefox inside this container. Chrome is deferred,
+not a blocker or a passed test; its failure is independent of UHID.
+
+[Playwright's Docker documentation](https://playwright.dev/docs/docker#crawling-and-scraping)
+describes sandboxed Chromium as a non-root user with a seccomp profile permitting
+`clone`, `setns` and `unshare` for namespace creation. That route does not itself
+require adding Linux capabilities. It is a container-launch policy change, not
+a browser patch. It still expands the permitted syscall surface: review the
+namespace exception against the actual Docker default rather than assuming the
+entire example profile is a minimal or equivalent replacement. Do not copy the
+separate troubleshooting suggestion to add `SYS_ADMIN`, or share host IPC merely
+because an example does so.
+
+[Docker documents applying profiles at container launch](https://docs.docker.com/engine/security/seccomp/).
+The running process cannot relax its inherited seccomp filter. AppArmor can
+independently restrict user namespaces, so the seccomp change alone is not a
+verified fix here. No launch-policy or host-policy change was made.
+
+Read-only diagnostics on 2026-10-21 found:
+
+- `unshare --user --map-root-user true` fails with `EPERM` as UID 1000 and as
+  container root.
+- `sudo -n unshare --pid --net --fork /bin/true` also fails with `EPERM`.
+- Seccomp filtering is active; `CAP_SYS_ADMIN` is absent from container root's
+  permitted and bounding sets. User namespaces are enabled by sysctl, with a
+  nonzero namespace limit, while AppArmor's unprivileged-userns restriction is on.
+- The bundled `chrome_sandbox` is not setuid. Installing it setuid would not
+  grant capabilities outside the container's bounding set or relax seccomp;
+  root's failed namespace probe is not a reason to add broad capabilities.
+
+These checks do not identify the exact denying policy layer. Keep the existing
+Chrome harness for a future compatible container, but continue with Firefox now.
+Do not use `--privileged`, `--cap-add=SYS_ADMIN`, `seccomp=unconfined`,
+`apparmor=unconfined`, or `--no-sandbox` as a workaround. No additional browser
+download or sandbox-helper installation was needed for this investigation.
 
 ## 5. What this session can and cannot change
 
@@ -138,6 +176,9 @@ scope; Chromium and remaining release/deployment gates are not complete. See the
 [implementation ledger](implementation-status.md).
 
 ## 6. Scoped device access on a normal Linux host
+
+Optional deployment reference only. Host access is not authorized for the current
+work; do not execute these steps as part of the container/Firefox validation.
 
 [72-yubiquity.rules](../packaging/udev/72-yubiquity.rules) restricts `/dev/uhid`
 and this project's hidraw nodes to an explicitly selected `yubiquity` group.

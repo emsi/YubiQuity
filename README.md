@@ -28,6 +28,12 @@ cross-browser/release validation remain unfinished. Chrome 155.0.8059.84 current
 exits with “No usable sandbox” in this container; Chrome compatibility is not yet
 verified. Use disposable test accounts.
 
+Current validation is Firefox stable/ESR inside the container. Per user direction
+on 2026-10-21, host access is excluded and Chrome is optional, not a blocker.
+The authenticator remains browser-independent in design; this is a validation
+boundary, not a Chrome compatibility claim. See the
+[sandbox research and decision](docs/container-uhid.md#chrome-sandbox-research-and-current-decision).
+
 The separate `probe` command deliberately provides only transport and GetInfo,
 without advertising credentials or PIN. No mode advertises built-in biometric UV
 or trusted manufacturer attestation.

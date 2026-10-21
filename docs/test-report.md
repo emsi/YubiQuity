@@ -4,6 +4,12 @@ Date: 2026-10-20. This is progress evidence, not a completed release or FIDO
 certification report. The full acceptance gates remain in the
 [implementation plan](../firefox-virtual-fido2-plan.md).
 
+Scope update, 2026-10-21: the user excluded host access and authorized Firefox-only
+validation if Chrome cannot run with narrowly scoped container permissions.
+Firefox stable/ESR are the current targets. Chrome, cross-browser reuse and host
+deployment remain unverified, not blockers or newly passing tests. This update
+does not change the historical results below.
+
 ## Environment and versions
 
 - Ubuntu 24.04.3 container, Linux 6.8.0-147-generic, x86-64, UID 1000 daemon.
@@ -22,8 +28,8 @@ certification report. The full acceptance gates remain in the
 | Mozilla Firefox stable 158.0.1, Linux x86-64 en-US archive | Basic/resident/required-UV, native two-account selection, persistence/service, negative cases and hotplug pass | Container user-namespace probe warns `EPERM`; not a claim that all sandbox layers work |
 | Mozilla Firefox ESR 153.5.1esr, Linux x86-64 en-US archive | Same scenario set passes with the unchanged authenticator | Same namespace warning; native menu UI test adapter has inspected ESR coordinates |
 | Chrome for Testing 155.0.8059.84 | Startup blocked before WebAuthn by “No usable sandbox” | No interoperability or cross-browser reuse claim |
-| Ordinary stable distribution Chrome/Chromium | Not validated | Suitable sandbox-capable host required |
-| Snap/Flatpak browser packages | Not validated | Need a runnable confined-package host and device-access checks; no confinement bypass is proposed |
+| Ordinary stable distribution Chrome/Chromium | Not validated; deferred | A sandbox-capable container would be needed for validation within the authorized scope |
+| Snap/Flatpak browser packages | Not validated; deferred | Confined-package runtime and device access have not been tested; no host execution or confinement bypass is proposed |
 
 No row implies support for arbitrary browsers or packages not tested here.
 
@@ -142,7 +148,7 @@ browser security features.
 
 ## Unverified or incomplete
 
-| Gate | Current state |
+| Check (including deferred coverage) | Current state |
 |---|---|
 | Chromium-family ceremonies | Chrome exits before a session starts with “No usable sandbox”; reproduced directly and via ChromeDriver |
 | Cross-browser reuse, both directions | Harness present; not executed successfully because Chrome cannot start |
@@ -162,9 +168,13 @@ The renewed stock Chrome attempt is recorded in
 or HID attachment. Direct headless startup with a disposable profile also exits
 134 with the same sandbox failure. User namespace creation returns `EPERM`,
 seccomp filtering and enforcing `docker-default` AppArmor are active, and there
-is no host Docker socket or systemd session available here. A suitable host test
-session or host-side policy correction is required; the exact responsible policy
-layer cannot be established from these container checks alone. See Chromium's
+is no host Docker socket or systemd session available here. The exact responsible
+policy layer cannot be established from these container checks alone. Host access
+is now explicitly excluded; Chrome validation is deferred in favor of Firefox.
+The non-root/seccomp-profile route and repeated namespace checks are documented
+in the [2026-10-21 container investigation](container-uhid.md#chrome-sandbox-research-and-current-decision).
+No container capabilities, security profiles, or browser settings were changed.
+See Chromium's
 [namespace restriction documentation](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md).
 
 ## Fuzzing and automation evidence
