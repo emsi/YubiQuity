@@ -44,6 +44,17 @@ getent group yubiquity || sudo groupadd --system yubiquity
 sudo usermod -aG yubiquity "$yubiquity_user"
 ```
 
+Verify the saved **host account** membership:
+
+```bash
+getent group yubiquity
+id -nG "$(id -un)"
+```
+
+The named-user `id` command must include `yubiquity`. Plain `id` without a
+username instead shows the running shell's groups, which may still be old.
+Changing group membership inside the container does not update the host account.
+
 Only add trusted users. Access to `/dev/uhid` permits creating other kinds of HID
 devices too, including input devices. The supplied rule grants hidraw access only
 to this project's matching virtual devices, not every security key on the host.
@@ -68,21 +79,51 @@ sudo udevadm trigger --action=change /sys/class/misc/uhid
 sudo udevadm settle
 ```
 
-**Log out of your desktop session completely, then log back in.** Merely opening
-another terminal or using `newgrp` does not update an already-running browser's
-group membership. Reopen your two terminals and browser after logging back in.
+### Activate and verify the new group
 
-Check in a fresh host terminal:
+Logging out and back in can refresh group membership, but **does not guarantee
+it on KDE**: the systemd user manager can survive logout and launch processes
+with its old groups. See [systemd's user-manager lifetime](https://www.freedesktop.org/software/systemd/man/255/logind.conf.html#UserStopDelaySec=).
+After login, check plain `id -nG` in each terminal. If it still lacks `yubiquity`
+despite the account check above succeeding, save your work and reboot the host
+to refresh the whole desktop, or use the following no-reboot route.
+
+For the no-reboot route, run this command **on its own** in each of Terminal A
+and Terminal B:
 
 ```bash
-id -nG
-stat -c '%A %U %G %n' /dev/uhid
-test -r /dev/uhid && test -w /dev/uhid && echo 'UHID access OK'
+newgrp yubiquity
+```
+
+It opens a new shell. **Wait for its prompt, then paste the next block separately.**
+Do not paste `newgrp` and the checks together: the remaining commands may wait
+in the old shell instead of running in the new one. Keep using these updated
+shells for the rest of the walkthrough; other terminals are not updated.
+
+Whether you used a fresh login, reboot, or `newgrp`, run this check in both
+terminals before continuing:
+
+```bash
+id
+stat -c '%A %U:%G (%u:%g) %n' /dev/uhid
+if test -r /dev/uhid && test -w /dev/uhid; then
+    echo 'UHID access OK'
+else
+    echo 'UHID access DENIED'
+fi
 ```
 
 Expect `yubiquity` among your groups, and `/dev/uhid` owned by `root:yubiquity`
-with mode `0660` (`crw-rw----`). If the node is missing after a later reboot, run
-`sudo modprobe uhid` again. Run the authenticator and browser **without sudo**.
+with mode `0660` (`crw-rw----`). Continue only after `UHID access OK`. If it prints
+`DENIED`, keep the complete `id` and `stat` output for diagnosis rather than
+assuming the group change worked. If the node is missing after a reboot, run
+`sudo modprobe uhid` and repeat the check.
+
+`newgrp` does **not** update an already-running browser or KDE's application
+launcher. If you used this route, fully quit the browser, including background
+instances, and launch it from updated Terminal B (for example, `firefox &`).
+Opening another window of an old browser process does not refresh its groups.
+Run both the authenticator and browser **without sudo**.
 
 ## 3. Terminal A: create and unlock a test vault
 
@@ -246,9 +287,10 @@ vault will not contain these test credentials.
 | Symptom | Check |
 | --- | --- |
 | `/dev/uhid` is missing | Run `sudo modprobe uhid`; if it fails, check host kernel UHID/HIDRAW support. |
-| Permission denied opening UHID or hidraw | Confirm the installed rule, group membership, and full desktop logout/login. Do not run the browser or daemon as root. |
+| Account belongs to `yubiquity`, but plain `id` does not show it | The running shell has stale groups. Use the separate `newgrp` step above or save your work and reboot; KDE logout/login may not refresh them. |
+| Permission denied opening UHID or hidraw | Compare current numeric groups from `id` with device ownership from `stat`, check the installed rule, and repeat the explicit access check above. Do not run the browser or daemon as root. |
 | No YubiQuity device while locked | Expected. It exists only while the unlocked daemon is attached. |
-| CLI sees the device, browser does not | Verify the security-key route and restart the browser after group setup. A confined browser package may also restrict device access; collect the package/version and error before changing policy. Do not disable its sandbox. |
+| CLI sees the device, browser does not | Verify the security-key route. If you used `newgrp`, fully quit the browser and launch it from the updated shell, not KDE's menu. A confined browser package may also restrict device access; collect the package/version and error before changing policy. Do not disable its sandbox. |
 | Vault path rejected | Its immediate directory must be yours and `0700`; unsafe writable ancestors and symlinks are rejected. See [vault requirements](vault.md). Do not recursively change your home directory's permissions. |
 | Vault already locked | Another `run`, unlocked `serve`, or vault command is using it. Stop that instance; do not delete the lock file. |
 | PIN temporarily blocked | Stop and restart `run` to reattach, then use the correct PIN. Reattachment does not replenish the persistent retry budget; repeated wrong PINs can permanently block it. |
@@ -260,7 +302,7 @@ is attached (update the variable after every reattachment):
 
 ```bash
 id
-stat -c '%A %U %G %n' /dev/uhid "$yubiquity_device"
+stat -c '%A %U:%G (%u:%g) %n' /dev/uhid "$yubiquity_device"
 fido2-token -L
 fido2-token -I "$yubiquity_device"
 udevadm info --query=property --name="$yubiquity_device"
