@@ -1,6 +1,6 @@
 # Docker Compose >= 2.24.4; pass this AFTER your existing Compose file(s).
-# On the Docker host, from the YubiQuity repository:
-#   export YUBIQUITY_SECCOMP="$(realpath packaging/docker/chrome-seccomp.json)"
+# No environment variable is required. The seccomp entry is an absolute HOST
+# path; edit that one line if the repository lives elsewhere on your host.
 # Preserve the existing Compose project name, image, user, entrypoint and volumes.
 services:
   codex:
@@ -13,7 +13,7 @@ services:
       # Required by the existing sudo-based dynamic hidraw node helper.
       - "no-new-privileges:false"
       - "apparmor=docker-default"
-      - "seccomp=${YUBIQUITY_SECCOMP:?Set YUBIQUITY_SECCOMP to the absolute HOST path of packaging/docker/chrome-seccomp.json}"
+      - "seccomp=/home/emsi/git/YubiQuity/packaging/docker/chrome-seccomp.json"
 
     # Replace these lists to avoid duplicate entries when the base already has
     # UHID/hidraw configured. Add any other intentionally needed devices here.

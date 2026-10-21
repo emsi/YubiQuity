@@ -57,7 +57,7 @@ class ComposeOverrideTests(unittest.TestCase):
         if cls.compose is None:
             raise unittest.SkipTest("install docker-compose-v2 for offline merge checks")
 
-    def config(self, *, configured=True):
+    def config(self, *, profile_env=None):
         # Synthetic input only. No Docker daemon, image pull, or container start.
         base = {
             "services": {"codex": {
@@ -73,8 +73,8 @@ class ComposeOverrideTests(unittest.TestCase):
         }
         env = dict(os.environ, DOCKER_HOST="unix:///nonexistent-yubiquity-compose-test.sock")
         env.pop("YUBIQUITY_SECCOMP", None)
-        if configured:
-            env["YUBIQUITY_SECCOMP"] = str(ROOT / "packaging/docker/chrome-seccomp.json")
+        if profile_env is not None:
+            env["YUBIQUITY_SECCOMP"] = profile_env
         return subprocess.run([
             self.compose, "--env-file", "/dev/null", "-p", "yubiquity-compose-test",
             "-f", "-", "-f", str(ROOT / "compose.yubiquity.override.yaml"),
@@ -88,7 +88,7 @@ class ComposeOverrideTests(unittest.TestCase):
         service = json.loads(result.stdout)["services"]["codex"]
         self.assertEqual(service["security_opt"], [
             "no-new-privileges:false", "apparmor=docker-default",
-            "seccomp=" + str(ROOT / "packaging/docker/chrome-seccomp.json"),
+            "seccomp=/home/emsi/git/YubiQuity/packaging/docker/chrome-seccomp.json",
         ])
         self.assertEqual(service["devices"], [{"source": "/dev/uhid", "target": "/dev/uhid", "permissions": "rw"}])
         self.assertEqual(service["device_cgroup_rules"], ["c 234:* rwm"])
@@ -101,10 +101,13 @@ class ComposeOverrideTests(unittest.TestCase):
         self.assertEqual(service["image"], "example.invalid/yubiquity-config-test:never-pulled")
         self.assertEqual(service["volumes"][0]["source"], "retained-home")
 
-    def test_missing_host_profile_variable_fails_before_container_creation(self):
-        result = self.config(configured=False)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("YUBIQUITY_SECCOMP", result.stderr)
+    def test_obsolete_environment_variable_cannot_change_explicit_profile_path(self):
+        result = self.config(profile_env="/ignored/environment/path.json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "seccomp=/home/emsi/git/YubiQuity/packaging/docker/chrome-seccomp.json",
+            json.loads(result.stdout)["services"]["codex"]["security_opt"],
+        )
 
 
 if __name__ == "__main__":

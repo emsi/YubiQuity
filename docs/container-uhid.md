@@ -162,15 +162,18 @@ below with your existing Compose file. Preserve any existing project name (`-p`)
 this override last so you update the existing project, not create a different one:
 
 ```bash
-export YUBIQUITY_SECCOMP="$(realpath packaging/docker/chrome-seccomp.json)"
 docker compose -f /path/to/your/compose.yaml \
   -f "$PWD/compose.yubiquity.override.yaml" config
 docker compose -f /path/to/your/compose.yaml \
   -f "$PWD/compose.yubiquity.override.yaml" up -d --force-recreate --no-deps codex
 ```
 
-The environment variable is intentionally required and should contain an absolute
-host path, avoiding ambiguity when the base Compose file is in another directory.
+No environment variable or export is needed. The override contains the explicit
+host path `/home/emsi/git/YubiQuity/packaging/docker/chrome-seccomp.json`.
+If your host checkout is elsewhere, edit the `seccomp=` line in the override.
+A relative seccomp path would resolve against the base Compose project directory,
+not necessarily this override's directory; using the absolute path avoids that
+ambiguity without requiring launcher environment propagation.
 Review `config` locally; it may contain resolved secrets from your existing base
 configuration, so do not publish its full output. Preserve volumes and needed
 writable-layer data before recreation. The post-recreation checks below apply
@@ -178,24 +181,24 @@ equally to Compose and `docker run`.
 
 Offline validation with Compose 2.40.3 passes: an existing conflicting security
 list and duplicate UHID/hidraw settings are replaced correctly, base identity and
-volumes survive, and an unset profile variable fails before creation. These two
+volumes survive, and configuration succeeds without any profile environment
+variable (an obsolete exported value is ignored). These two
 merge checks run alongside the three profile-integrity checks in
 `tests/container_seccomp.py`. No Docker Engine was installed or contacted.
 
 #### Existing docker run launcher
 
-From this repository's root **on the Docker client/host**, resolve the file:
+Check the profile exists at its explicit path **on the Docker client/host**:
 
 ```bash
-export YUBIQUITY_SECCOMP="$(realpath packaging/docker/chrome-seccomp.json)"
-test -r "$YUBIQUITY_SECCOMP"
+test -r /home/emsi/git/YubiQuity/packaging/docker/chrome-seccomp.json
 ```
 
 Add the following single argument to the existing `docker run` in the launcher,
-before its image name. The exported variable must be available in that launcher:
+before its image name. Change the path directly if your host checkout is elsewhere:
 
 ```bash
---security-opt "seccomp=$YUBIQUITY_SECCOMP"
+--security-opt seccomp=/home/emsi/git/YubiQuity/packaging/docker/chrome-seccomp.json
 ```
 
 Keep the existing device arguments; major 234 was observed on this host:
