@@ -6,6 +6,11 @@ It is a testing tool, not hardware-backed key protection or a manufacturer-attes
 YubiKey. See the [full plan](firefox-virtual-fido2-plan.md) and
 [implementation ledger](docs/implementation-status.md).
 
+For a hands-on test with your own browser, follow the
+[end-to-end Linux host walkthrough](docs/host-testing.md). It covers host device
+permissions, a private test vault, PIN setup, both public demo sites, persistence,
+and Firefox/Chrome credential reuse without browser modifications.
+
 ## Current status
 
 The development authenticator creates independent ES256 credentials, supports
