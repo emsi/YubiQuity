@@ -55,6 +55,25 @@ class VaultTests(unittest.TestCase):
             function()
         self.assertEqual(caught.exception.code, code)
 
+    def test_group_writable_user_ancestors_support_cli_init_and_list(self):
+        local = Path(self.directory.name) / ".local"
+        share = local / "share"
+        app = share / "yubiquity"
+        app.mkdir(parents=True, mode=0o700)
+        for ancestor in (local, share):
+            ancestor.chmod(0o775)
+        path = app / "host-test/credentials.yq"
+
+        cli("init", path)
+        metadata = json.loads(cli("list", path).stdout)
+        self.assertEqual(metadata["credentials"], [])
+        self.assertFalse(metadata["pin_configured"])
+        self.assertEqual(path.parent.stat().st_mode & 0o7777, 0o700)
+        for private_file in (path, path.parent / ".credentials.yq.lock"):
+            self.assertEqual(private_file.stat().st_mode & 0o7777, 0o600)
+        for ancestor in (local, share):
+            self.assertEqual(ancestor.stat().st_mode & 0o7777, 0o775)
+
     def test_restart_lock_metadata_and_exact_deletion(self):
         with daemon("run", vault=self.path, passphrase=PASSWORD) as (process, path, unique), deadline(25), open_device(path) as device:
             credential = approved(process, lambda: register(Ctap2(device), resident=True)).auth_data.credential_data

@@ -132,10 +132,15 @@ cd "$HOME/git/YubiQuity"
 yubiquity_bin="$PWD/target/host/release/yubiquity"
 yubiquity_vault="$HOME/.local/share/yubiquity/host-test/credentials.yq"
 umask 077
-mkdir -p "$HOME/.local/share/yubiquity"
-"$yubiquity_bin" init --vault "$yubiquity_vault"
-"$yubiquity_bin" run --vault "$yubiquity_vault"
+mkdir -p "$HOME/.local/share/yubiquity" &&
+    "$yubiquity_bin" init --vault "$yubiquity_vault" &&
+    "$yubiquity_bin" run --vault "$yubiquity_vault"
 ```
+
+User-owned `.local` and `.local/share` directories with mode `0775` are allowed;
+you do not need to change their permissions. The vault's immediate `host-test`
+directory must still be private (`0700`). The `&&` chain stops on failure, so
+`run` does not prompt for a passphrase if `init` failed.
 
 `init` asks you to choose and confirm a vault passphrase of at least 12 bytes
 (12 ASCII characters meets that minimum). `run` asks for it again to unlock.
@@ -291,7 +296,7 @@ vault will not contain these test credentials.
 | Permission denied opening UHID or hidraw | Compare current numeric groups from `id` with device ownership from `stat`, check the installed rule, and repeat the explicit access check above. Do not run the browser or daemon as root. |
 | No YubiQuity device while locked | Expected. It exists only while the unlocked daemon is attached. |
 | CLI sees the device, browser does not | Verify the security-key route. If you used `newgrp`, fully quit the browser and launch it from the updated shell, not KDE's menu. A confined browser package may also restrict device access; collect the package/version and error before changing policy. Do not disable its sandbox. |
-| Vault path rejected | Its immediate directory must be yours and `0700`; unsafe writable ancestors and symlinks are rejected. See [vault requirements](vault.md). Do not recursively change your home directory's permissions. |
+| Vault path rejected | Its immediate directory must be yours and `0700`; user-owned `0775` ancestors are allowed. Inspect with `namei -l "$yubiquity_vault"` and check the remaining [vault requirements](vault.md). Do not recursively change home-directory permissions. |
 | Vault already locked | Another `run`, unlocked `serve`, or vault command is using it. Stop that instance; do not delete the lock file. |
 | PIN temporarily blocked | Stop and restart `run` to reattach, then use the correct PIN. Reattachment does not replenish the persistent retry budget; repeated wrong PINs can permanently block it. |
 | `GLIBC_... not found` | Build on the host using the separate `target/host` directory in step 1. |

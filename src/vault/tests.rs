@@ -189,29 +189,97 @@ fn invalid_version_lengths_and_kdf_are_rejected_before_derivation() {
 }
 
 #[test]
+fn ancestor_policy_only_relaxes_user_owned_group_write_for_vaults() {
+    let user = 1000;
+    for (owner, mode, vault_allowed, control_allowed) in [
+        (user, 0o700, true, true),
+        (user, 0o755, true, true),
+        (user, 0o770, true, false),
+        (user, 0o775, true, false),
+        (user, 0o2775, true, false),
+        (user, 0o777, false, false),
+        (user, 0o1777, false, false),
+        (0, 0o755, true, true),
+        (0, 0o775, false, false),
+        (0, 0o777, false, false),
+        (0, 0o1777, true, true),
+        (2000, 0o755, false, false),
+        (2000, 0o775, false, false),
+        (2000, 0o1777, false, false),
+    ] {
+        assert_eq!(
+            DirectoryPolicy::Vault.allows_ancestor(owner, mode, user),
+            vault_allowed,
+            "vault: owner={owner} mode={mode:o}"
+        );
+        assert_eq!(
+            DirectoryPolicy::ControlSocket.allows_ancestor(owner, mode, user),
+            control_allowed,
+            "control: owner={owner} mode={mode:o}"
+        );
+    }
+}
+
+#[test]
+fn user_owned_group_writable_ancestors_allow_create_and_reopen() {
+    let root = private_temp();
+    let local = root.path().join(".local");
+    let share = local.join("share");
+    let app = share.join("yubiquity");
+    fs::create_dir_all(&app).unwrap();
+    for ancestor in [&local, &share] {
+        fs::set_permissions(ancestor, fs::Permissions::from_mode(0o775)).unwrap();
+    }
+    fs::set_permissions(&app, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = app.join("host-test/credentials.yq");
+
+    let mut vault = create(&path);
+    vault.commit(sample()).unwrap();
+    drop(vault);
+    let reopened = Vault::open(&path, PASSWORD).unwrap();
+    assert_eq!(reopened.state().credentials[0].private_key, [3; 32]);
+    assert_eq!(reopened.state().pin.as_ref().unwrap().retries, 8);
+    assert_eq!(
+        fs::metadata(path.parent().unwrap()).unwrap().mode() & 0o7777,
+        0o700
+    );
+    for file in [&path, &path.parent().unwrap().join(".credentials.yq.lock")] {
+        assert_eq!(fs::metadata(file).unwrap().mode() & 0o7777, 0o600);
+    }
+    // Compatibility must not silently chmod the user's existing directories.
+    for ancestor in [&local, &share] {
+        assert_eq!(fs::metadata(ancestor).unwrap().mode() & 0o7777, 0o775);
+    }
+}
+
+#[test]
 fn unsafe_directory_file_and_lock_modes_are_rejected() {
     let root = private_temp();
     let directory = root.path().join("private");
     let path = directory.join("vault.yq");
     drop(create(&path));
-    fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(matches!(
-        Vault::open(&path, PASSWORD),
-        Err(VaultError::UnsafePath(_))
-    ));
-    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
-    for target in [&path, &directory.join(".vault.yq.lock")] {
-        fs::set_permissions(target, fs::Permissions::from_mode(0o644)).unwrap();
+    for mode in [0o755, 0o770, 0o775, 0o777] {
+        fs::set_permissions(&directory, fs::Permissions::from_mode(mode)).unwrap();
         assert!(matches!(
             Vault::open(&path, PASSWORD),
             Err(VaultError::UnsafePath(_))
         ));
+    }
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+    for target in [&path, &directory.join(".vault.yq.lock")] {
+        for mode in [0o644, 0o660, 0o666] {
+            fs::set_permissions(target, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(matches!(
+                Vault::open(&path, PASSWORD),
+                Err(VaultError::UnsafePath(_))
+            ));
+        }
         fs::set_permissions(target, fs::Permissions::from_mode(0o600)).unwrap();
     }
 }
 
 #[test]
-fn symlinks_hardlinks_and_writable_ancestors_are_rejected() {
+fn symlinks_hardlinks_and_world_writable_ancestors_are_rejected() {
     let root = private_temp();
     let path = root.path().join("private/vault.yq");
     drop(create(&path));
@@ -236,6 +304,25 @@ fn symlinks_hardlinks_and_writable_ancestors_are_rejected() {
 }
 
 #[test]
+fn world_writable_user_owned_ancestors_reject_create_and_open() {
+    let root = private_temp();
+    let path = root.path().join("private/vault.yq");
+    drop(create(&path));
+    for mode in [0o777, 0o1777] {
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(mode)).unwrap();
+        assert!(matches!(
+            Vault::open(&path, PASSWORD),
+            Err(VaultError::UnsafePath(_))
+        ));
+        assert!(matches!(
+            Vault::create_with_kdf(&root.path().join("new/vault.yq"), PASSWORD, fast_kdf()),
+            Err(VaultError::UnsafePath(_))
+        ));
+        assert!(!root.path().join("new").exists());
+    }
+}
+
+#[test]
 fn special_file_does_not_block_and_path_traversal_is_rejected() {
     let root = private_temp();
     let fifo = root.path().join("pipe.yq");
@@ -247,7 +334,7 @@ fn special_file_does_not_block_and_path_traversal_is_rejected() {
         Err(VaultError::UnsafePath(_))
     ));
     assert!(matches!(
-        directory(&root.path().join("../bad.yq"), true),
+        directory(&root.path().join("../bad.yq"), true, DirectoryPolicy::Vault),
         Err(VaultError::UnsafePath(_))
     ));
 }

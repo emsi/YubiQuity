@@ -206,7 +206,7 @@ impl Vault {
     }
     fn create_with_kdf(path: &Path, passphrase: &[u8], kdf: Kdf) -> Result<Self> {
         validate_passphrase(passphrase)?;
-        let (directory, name) = directory(path, true)?;
+        let (directory, name) = directory(path, true, DirectoryPolicy::Vault)?;
         let lock = lock(&directory, &name)?;
         match open_at(&directory, &name, libc::O_RDONLY, 0) {
             Ok(_) => return Err(VaultError::AlreadyExists),
@@ -235,7 +235,7 @@ impl Vault {
 
     pub fn open(path: &Path, passphrase: &[u8]) -> Result<Self> {
         validate_passphrase(passphrase)?;
-        let (directory, name) = directory(path, false)?;
+        let (directory, name) = directory(path, false, DirectoryPolicy::Vault)?;
         let lock = lock(&directory, &name)?;
         let mut file = open_at(&directory, &name, libc::O_RDONLY, 0).map_err(io_error("open"))?;
         let meta = private_file(&file)?;
@@ -521,7 +521,38 @@ fn private_file(file: &File) -> Result<Metadata> {
     Ok(meta)
 }
 
-pub(crate) fn directory(path: &Path, create: bool) -> Result<(File, CString)> {
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DirectoryPolicy {
+    Vault,
+    ControlSocket,
+}
+impl DirectoryPolicy {
+    fn allows_ancestor(self, owner: u32, mode: u32, user: u32) -> bool {
+        if owner != 0 && owner != user {
+            return false;
+        }
+        // Preserve the existing exception for root-owned sticky directories,
+        // e.g. /tmp. A user's sticky bit does not make a public path trusted.
+        if owner == 0 && mode & 0o1000 != 0 {
+            return true;
+        }
+        // Common user-owned .local/share directories are 0775. Accept their
+        // group-write bit for vaults without loosening the private leaf/files
+        // or the separate control endpoint's ancestor policy. This trusts the
+        // owner's choice of group; it does not inspect group membership.
+        let forbidden_write_bits = match self {
+            Self::Vault if owner == user => 0o002,
+            _ => 0o022,
+        };
+        mode & forbidden_write_bits == 0
+    }
+}
+
+pub(crate) fn directory(
+    path: &Path,
+    create: bool,
+    policy: DirectoryPolicy,
+) -> Result<(File, CString)> {
     if uid() == 0 {
         return Err(VaultError::UnsafePath(
             "run the vault as an unprivileged user",
@@ -557,11 +588,7 @@ pub(crate) fn directory(path: &Path, create: bool) -> Result<(File, CString)> {
     let mut current = File::open("/").map_err(io_error("open filesystem root"))?;
     for (index, part) in names.iter().enumerate() {
         let parent = current.metadata().map_err(io_error("ancestor metadata"))?;
-        let sticky_root = parent.uid() == 0 && parent.mode() & 0o1000 != 0;
-        if !parent.is_dir()
-            || (parent.uid() != 0 && parent.uid() != uid())
-            || (parent.mode() & 0o022 != 0 && !sticky_root)
-        {
+        if !parent.is_dir() || !policy.allows_ancestor(parent.uid(), parent.mode(), uid()) {
             return Err(VaultError::UnsafePath(
                 "untrusted or writable ancestor directory",
             ));

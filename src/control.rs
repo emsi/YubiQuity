@@ -183,8 +183,9 @@ impl Drop for SocketPath {
 }
 
 fn private_path(path: &Path) -> Result<(SocketPath, std::ffi::CString)> {
-    let (directory, name) = crate::vault::directory(path, false)
-        .context("control endpoint requires a private 0700 parent with no symlink ancestors")?;
+    let (directory, name) =
+        crate::vault::directory(path, false, crate::vault::DirectoryPolicy::ControlSocket)
+            .context("control endpoint requires a private 0700 parent with no symlink ancestors")?;
     let alias = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()))
         .join(std::ffi::OsStr::from_bytes(name.as_bytes()));
     if alias.as_os_str().as_bytes().len() >= 108 {

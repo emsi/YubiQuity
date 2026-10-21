@@ -77,10 +77,21 @@ bindings against a disposable fixture. It is not an export/import interface.
 The vault directory must be owned by the running unprivileged user with mode
 `0700`. Vault and lock files must be regular, owned by that user, mode `0600`, and
 have only one hard link. Symlinks in any path component are rejected. Ancestors
-must be root- or user-owned and not group/world writable, except trusted
-root-owned sticky directories such as `/tmp`. Filenames must be non-hidden and
-at most 180 bytes. Parent traversal is rejected. The CLI never changes permissions
-on existing directories/files to make an unsafe path pass validation.
+must be root- or user-owned. **User-owned ancestors may be group-writable**, so
+ordinary `0775` directories such as `~/.local` and `~/.local/share` are accepted.
+World-writable ancestors and group-writable root-owned ancestors remain rejected,
+except root-owned sticky directories such as `/tmp`. The immediate vault
+directory still requires `0700`; the exception applies only to its ancestors.
+Filenames must be non-hidden and at most 180 bytes. Parent traversal is rejected.
+The CLI never changes permissions on existing directories/files to make a path
+pass validation.
+
+Allowing group-write trusts the user's choice of group; membership is not checked.
+Other group members with directory write access can rename or replace child
+paths, so do not use an untrusted shared group for these ancestors. This is a
+compatibility tradeoff, not protection against hostile group members. The local
+control socket retains its stricter ancestor policy: no group/world-write access
+except in root-owned sticky directories, and an immediate private `0700` parent.
 
 All operations are anchored to open, checked directory descriptors. A separate
 `.FILENAME.lock` file is exclusively locked for the entire unlocked lifetime.

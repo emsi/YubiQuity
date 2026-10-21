@@ -29,6 +29,7 @@ jobs:
           cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
           cargo test --all-targets --locked
           cargo build --locked
+          /usr/bin/python3 tests/vault_integration.py VaultTests.test_group_writable_user_ancestors_support_cli_init_and_list
           /usr/bin/python3 tests/browser/test_rp.py
           /usr/bin/python3 tests/browser/test_ui.py
           /usr/bin/python3 tests/browser/test_public_sites.py

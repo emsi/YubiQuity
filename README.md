@@ -99,7 +99,10 @@ Short clean runs and an advisory-free lockfile are checks, not proof of security
 
 Use a dedicated private directory. `init` can create its immediate parent with
 mode `0700`; it never overwrites an existing vault. All higher parents must already
-exist and must not be untrusted writable directories or symlinks.
+exist, be root- or user-owned, and not be symlinks. User-owned group-writable
+ancestors such as `0775` `~/.local/share` are allowed; world-writable ancestors
+are rejected except root-owned sticky directories such as `/tmp`. See the
+[vault path policy and group-trust tradeoff](docs/vault.md#filesystem-safety-and-writes).
 
 ```bash
 cargo build --release --locked
@@ -149,8 +152,9 @@ Foreground `run` remains available unchanged. `serve` instead starts **locked**:
 no device is attached until an explicit unlock succeeds. Its control endpoint is
 a filesystem Unix socket, not a TCP listener. The parent must already be owned by
 you with mode `0700`; the socket is mode `0600`, with same-UID peer checks on both
-ends and a separate lifetime lock. Symlinks/unsafe ancestors are rejected using
-the same path checks as the vault.
+ends and a separate lifetime lock. Symlinks/unsafe ancestors are rejected. Unlike
+vault paths, control socket paths retain the stricter ancestor policy: no
+group/world-write access except in root-owned sticky directories such as `/tmp`.
 
 For a direct development run (two terminals), use private temporary runtime state:
 

@@ -67,6 +67,21 @@ fn rejects_unsafe_paths_and_only_recovers_a_stale_owned_socket() {
 }
 
 #[test]
+fn group_writable_ancestor_is_still_rejected_for_control_endpoints() {
+    let directory = private_temp();
+    let runtime = directory.path().join("runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    std::fs::set_permissions(&runtime, Permissions::from_mode(0o700)).unwrap();
+    let path = runtime.join("control.sock");
+    let _server = Server::bind(&path).unwrap();
+
+    std::fs::set_permissions(directory.path(), Permissions::from_mode(0o775)).unwrap();
+    assert!(Server::bind(&runtime.join("other.sock")).is_err());
+    assert!(call(&path, &Request::Status {}).is_err());
+    assert!(!runtime.join("other.sock").exists());
+}
+
+#[test]
 fn drop_never_unlinks_a_replacement_file_or_socket() {
     let directory = private_temp();
     let path = directory.path().join("control.sock");
