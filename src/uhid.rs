@@ -2,10 +2,9 @@
 use crate::hid::Report;
 use anyhow::{bail, Context, Result};
 use rand_core::{OsRng, RngCore};
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::fs::File;
+use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -38,17 +37,22 @@ pub struct Device {
 }
 
 impl Device {
+    /// Read-only access check; opening UHID does not attach a device.
+    pub fn preflight() -> Result<()> {
+        // SAFETY: geteuid has no arguments or memory preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            bail!("Run the authenticator as a normal user, not root");
+        }
+        drop(crate::device_access::open_uhid()?);
+        Ok(())
+    }
+
     pub fn create(node_helper: Option<&Path>) -> Result<Self> {
         // SAFETY: geteuid has no arguments, memory accesses or preconditions.
         if unsafe { libc::geteuid() } == 0 {
             bail!("Run the authenticator as a normal user, not root");
         }
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW)
-            .open("/dev/uhid")
-            .context("opening /dev/uhid; check host/device permissions")?;
+        let file = crate::device_access::open_uhid()?;
         let mut random = [0u8; 16];
         OsRng
             .try_fill_bytes(&mut random)
@@ -109,16 +113,12 @@ impl Device {
         if let Some(helper) = node_helper {
             device.helper = Some(NodeGuard::start(helper, &device.unique, &device.node)?);
         }
-        // On a desktop udev creates the node asynchronously. A container helper
-        // prints readiness only after it has created and checked the exact node.
-        let node_deadline = Instant::now() + Duration::from_secs(2);
-        while !device.node.exists() && Instant::now() < node_deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let _access = OpenOptions::new().read(true).write(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW)
-            .open(&device.node).with_context(|| format!(
-                "opening {}; container users can pass --node-helper scripts/container-hidraw.py (requires sudo and the hidraw cgroup rule)", device.node.display()))?;
+        crate::device_access::wait_hidraw(
+            &device.node,
+            &sysfs,
+            &device.unique,
+            node_helper.is_some(),
+        )?;
         Ok(device)
     }
 
@@ -273,7 +273,10 @@ fn find_hidraw(unique: &str) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
-struct NodeGuard(Child);
+const HELPER_TIMEOUT: Duration = Duration::from_secs(3);
+const HELPER_STOP_TIMEOUT: Duration = Duration::from_millis(500);
+
+struct NodeGuard(Option<Child>);
 impl NodeGuard {
     fn start(script: &Path, unique: &str, expected_path: &Path) -> Result<Self> {
         let script = script
@@ -297,23 +300,96 @@ impl NodeGuard {
             .stderr(Stdio::inherit())
             .spawn()
             .context("starting container device-node helper")?;
-        let mut guard = Self(child);
-        let mut ready = String::new();
-        BufReader::new(guard.0.stdout.take().context("helper stdout")?)
-            .take(4096)
-            .read_line(&mut ready)
-            .context("waiting for helper readiness")?;
-        if ready.trim_end() != expected_path.to_string_lossy() {
-            bail!("Device-node helper failed or returned an unexpected node: {ready:?}");
-        }
+        let mut guard = Self(Some(child));
+        guard.ready(expected_path, HELPER_TIMEOUT)?;
         Ok(guard)
     }
+
+    fn ready(&mut self, expected: &Path, timeout: Duration) -> Result<()> {
+        let mut stdout = self
+            .0
+            .as_mut()
+            .context("helper process")?
+            .stdout
+            .take()
+            .context("helper stdout")?;
+        let fd = stdout.as_raw_fd();
+        // SAFETY: fcntl operates on the owned pipe FD and takes scalar flags.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        // SAFETY: fd is live and F_SETFL receives scalar status flags.
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("make helper readiness nonblocking");
+        }
+        let start = Instant::now();
+        let mut ready = Vec::new();
+        loop {
+            if start.elapsed() >= timeout {
+                bail!(
+                    "explicit node helper did not report readiness within {} ms",
+                    timeout.as_millis()
+                );
+            }
+            let mut buffer = [0; 256];
+            match stdout.read(&mut buffer) {
+                Ok(0) => bail!(
+                    "explicit node helper exited before reporting readiness; check its stderr"
+                ),
+                Ok(count) => {
+                    ready.extend_from_slice(&buffer[..count]);
+                    if ready.len() > 4096 {
+                        bail!("node helper readiness exceeds 4096 bytes");
+                    }
+                    if ready.contains(&b'\n') {
+                        if ready != format!("{}\n", expected.display()).as_bytes() {
+                            bail!("node helper reported an unexpected device path");
+                        }
+                        return Ok(());
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(
+                        Duration::from_millis(10).min(timeout.saturating_sub(start.elapsed())),
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => (),
+                Err(error) => return Err(error).context("read helper readiness"),
+            }
+        }
+    }
 }
+
+fn child_exited(child: &mut Child, timeout: Duration) -> bool {
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Err(_) => return false,
+            Ok(None) if start.elapsed() >= timeout => return false,
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
 impl Drop for NodeGuard {
     fn drop(&mut self) {
+        let Some(mut child) = self.0.take() else {
+            return;
+        };
         // EOF tells the helper to clean up, including when the daemon is killed.
-        drop(self.0.stdin.take());
-        let _ = self.0.wait();
+        drop(child.stdin.take());
+        if child_exited(&mut child, HELPER_STOP_TIMEOUT) {
+            return;
+        }
+        // Never let a malfunctioning external helper prevent UHID detach.
+        // Killing a privileged helper may be denied; report that honestly.
+        let result = child.kill();
+        if !child_exited(&mut child, HELPER_STOP_TIMEOUT) {
+            eprintln!("Node helper did not exit after EOF/termination ({result:?}); detaching UHID without waiting further. Check the explicitly selected helper.");
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
     }
 }
 
@@ -332,5 +408,46 @@ mod tests {
         for length in [0, 1, 63, 66, 4096] {
             assert_eq!(normalize_output(&vec![0; length]), None);
         }
+    }
+
+    fn helper(script: &str) -> NodeGuard {
+        NodeGuard(Some(
+            Command::new("/bin/sh")
+                .args(["-c", script])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ))
+    }
+
+    #[test]
+    fn helper_readiness_accepts_only_the_expected_complete_line() {
+        let mut correct = helper("printf '/dev/hidraw123\n'; read -r ignored");
+        correct
+            .ready(Path::new("/dev/hidraw123"), Duration::from_secs(1))
+            .unwrap();
+        for script in [
+            "printf '/dev/hidraw456\n'",
+            "printf '/dev/hidraw123'",
+            "exit 1",
+        ] {
+            let mut wrong = helper(script);
+            assert!(wrong
+                .ready(Path::new("/dev/hidraw123"), Duration::from_secs(1))
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn helper_startup_and_shutdown_cannot_block_forever() {
+        let mut stuck = helper("exec sleep 30");
+        let start = Instant::now();
+        let error = stuck
+            .ready(Path::new("/dev/hidraw123"), Duration::from_millis(30))
+            .unwrap_err();
+        assert!(error.to_string().contains("within 30 ms"));
+        drop(stuck);
+        assert!(start.elapsed() < Duration::from_secs(3));
     }
 }

@@ -147,3 +147,27 @@ fn requests_reject_unknown_fields_and_cli_checks_endpoint_permissions() {
     std::fs::set_permissions(&path, Permissions::from_mode(0o666)).unwrap();
     assert!(call(&path, &Request::Status {}).is_err());
 }
+
+#[test]
+fn delayed_attachment_reply_gets_a_fresh_bounded_flush_window() {
+    let directory = private_temp();
+    let path = directory.path().join("control.sock");
+    let mut server = Server::bind(&path).unwrap();
+    let mut client = connect(&path).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    send_request(&mut client, &Request::Unlock { passphrase: vec![] });
+    let (id, _) = server.poll().unwrap().unwrap();
+    server.clients[0].accepted -= CLIENT_LIFETIME * 2;
+    server
+        .respond(id, Response::locked().error("device attachment failed"))
+        .unwrap();
+    server.poll().unwrap();
+    let mut length = [0; 4];
+    client.read_exact(&mut length).unwrap();
+    let mut bytes = vec![0; u32::from_be_bytes(length) as usize];
+    client.read_exact(&mut bytes).unwrap();
+    let response: Response = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(response.error.as_deref(), Some("device attachment failed"));
+}

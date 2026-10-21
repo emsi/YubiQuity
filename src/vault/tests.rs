@@ -51,6 +51,69 @@ fn no_temporaries(directory: &Path) {
 }
 
 #[test]
+fn preflight_is_read_only_for_new_and_existing_vaults() {
+    let root = private_temp();
+    let path = root.path().join("private/credentials.yq");
+    Vault::preflight(&path, true).unwrap();
+    assert!(!path.parent().unwrap().exists());
+    let vault = create(&path);
+    assert!(matches!(
+        Vault::preflight(&path, false),
+        Err(VaultError::Busy)
+    ));
+    drop(vault);
+    let bytes = fs::read(&path).unwrap();
+    let meta = fs::metadata(&path).unwrap();
+    Vault::preflight(&path, false).unwrap();
+    assert_eq!(fs::metadata(&path).unwrap().ino(), meta.ino());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert!(matches!(
+        Vault::preflight(&path, true),
+        Err(VaultError::AlreadyExists)
+    ));
+    // Diagnostics must not create a missing lock file either.
+    let lock_path = path.parent().unwrap().join(".credentials.yq.lock");
+    fs::remove_file(&lock_path).unwrap();
+    Vault::preflight(&path, false).unwrap();
+    assert!(!lock_path.exists());
+}
+
+#[test]
+fn preflight_names_missing_and_unsafe_components_before_any_secret() {
+    let root = private_temp();
+    let missing = root.path().join("missing");
+    let error = Vault::preflight(&missing.join("nested/credentials.yq"), true).unwrap_err();
+    assert!(error.to_string().contains(missing.to_str().unwrap()));
+    assert!(!missing.exists());
+    let path = root.path().join("private/credentials.yq");
+    drop(create(&path));
+    fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o755)).unwrap();
+    let error = Vault::preflight(&path, false).unwrap_err().to_string();
+    assert!(error.contains(path.parent().unwrap().to_str().unwrap()));
+    assert!(error.contains("0755"));
+    fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o777)).unwrap();
+    let error = Vault::preflight(&path, false).unwrap_err().to_string();
+    assert!(error.contains(root.path().to_str().unwrap()));
+    assert!(error.contains("0777"));
+}
+
+#[test]
+fn preflight_rejects_corrupt_public_envelope_and_symlinks() {
+    let root = private_temp();
+    let path = root.path().join("credentials.yq");
+    drop(create(&path));
+    let link = root.path().join("link.yq");
+    symlink(&path, &link).unwrap();
+    assert!(Vault::preflight(&link, false).is_err());
+    fs::write(&path, b"truncated").unwrap();
+    assert!(matches!(
+        Vault::preflight(&path, false),
+        Err(VaultError::InvalidHeader)
+    ));
+}
+
+#[test]
 fn round_trip_ciphertext_permissions_and_fresh_nonce() {
     let root = private_temp();
     let path = root.path().join("private/credentials.yq");

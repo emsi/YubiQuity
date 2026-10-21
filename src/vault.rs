@@ -15,7 +15,7 @@ use std::fs::{File, Metadata};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use zeroize::{Zeroize, Zeroizing};
 
 const MAGIC: &[u8; 8] = b"YQVAULT\0";
@@ -29,7 +29,8 @@ type Result<T> = std::result::Result<T, VaultError>;
 #[derive(Debug)]
 pub enum VaultError {
     Io(&'static str, io::Error),
-    UnsafePath(&'static str),
+    UnsafePath(String),
+    IoAt(&'static str, PathBuf, io::Error),
     Busy,
     AlreadyExists,
     InvalidHeader,
@@ -43,6 +44,9 @@ impl fmt::Display for VaultError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(operation, error) => write!(f, "vault {operation}: {error}"),
+            Self::IoAt(operation, path, error) => {
+                write!(f, "vault {operation} at {}: {error}", path.display())
+            }
             Self::UnsafePath(reason) => write!(f, "unsafe vault path: {reason}"),
             Self::Busy => f.write_str("vault is locked by another process"),
             Self::AlreadyExists => {
@@ -64,6 +68,15 @@ impl fmt::Display for VaultError {
     }
 }
 impl std::error::Error for VaultError {}
+impl VaultError {
+    fn at(self, path: &Path) -> Self {
+        match self {
+            Self::Io(operation, error) => Self::IoAt(operation, path.to_path_buf(), error),
+            Self::UnsafePath(reason) => Self::UnsafePath(format!("{}: {reason}", path.display())),
+            other => other,
+        }
+    }
+}
 fn io_error(operation: &'static str) -> impl FnOnce(io::Error) -> VaultError {
     move |error| VaultError::Io(operation, error)
 }
@@ -201,6 +214,55 @@ pub struct Vault {
 }
 
 impl Vault {
+    /// Validate public path/envelope information before requesting a secret.
+    /// Creates no directories, lock files or vaults, and does not decrypt data.
+    /// The actual operation repeats all FD-relative checks to avoid TOCTOU trust.
+    pub fn preflight(path: &Path, create: bool) -> Result<()> {
+        let (directory, name, missing_leaf) =
+            directory_walk(path, create, true, DirectoryPolicy::Vault)?;
+        if missing_leaf {
+            return writable_directory(&directory).map_err(|e| e.at(path.parent().unwrap_or(path)));
+        }
+        if create {
+            match open_at(&directory, &name, libc::O_PATH, 0) {
+                Ok(_) => return Err(VaultError::AlreadyExists),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                Err(error) => return Err(io_error("inspect existing file")(error).at(path)),
+            }
+            writable_directory(&directory).map_err(|e| e.at(path.parent().unwrap_or(path)))?;
+        } else {
+            let mut file = open_at(&directory, &name, libc::O_RDONLY, 0)
+                .map_err(|error| io_error("open (initialize a new vault explicitly with init; do not reinitialize an existing vault)")(error).at(path))?;
+            let meta = private_file(&file).map_err(|e| e.at(path))?;
+            if !(HEADER_LEN as u64 + TAG_LEN as u64..=(HEADER_LEN + MAX_PLAIN + TAG_LEN) as u64)
+                .contains(&meta.len())
+            {
+                return Err(VaultError::InvalidHeader);
+            }
+            let mut header = [0; HEADER_LEN];
+            file.read_exact(&mut header)
+                .map_err(|error| io_error("read header")(error).at(path))?;
+            let (_, _, _, length) = parse_header(&header)?;
+            if meta.len() != (HEADER_LEN + length) as u64 {
+                return Err(VaultError::InvalidHeader);
+            }
+        }
+        // Check an existing lock without creating one. Release immediately;
+        // create/open still obtain the lifetime lock after the secret is read.
+        let lock_name = lock_name(&name)?;
+        match open_at(&directory, &lock_name, libc::O_RDONLY, 0) {
+            Ok(file) => {
+                private_file(&file).map_err(|e| {
+                    e.at(&path.with_file_name(OsStr::from_bytes(lock_name.to_bytes())))
+                })?;
+                exclusive_lock(&file)?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+            Err(error) => return Err(io_error("inspect writer lock")(error).at(path)),
+        }
+        Ok(())
+    }
+
     pub fn create(path: &Path, passphrase: &[u8]) -> Result<Self> {
         Self::create_with_kdf(path, passphrase, Kdf::default())
     }
@@ -326,7 +388,7 @@ impl Vault {
                 .map_err(io_error("check current file"))?;
             if Identity::from(&private_file(&current)?) != identity {
                 return Err(VaultError::UnsafePath(
-                    "vault file replaced outside the writer lock",
+                    "vault file replaced outside the writer lock".into(),
                 ));
             }
         }
@@ -477,7 +539,7 @@ fn random(output: &mut [u8]) -> Result<()> {
         .map_err(|_| io_error("OS randomness")(io::Error::other("entropy unavailable")))
 }
 fn cstring(value: &OsStr) -> Result<CString> {
-    CString::new(value.as_bytes()).map_err(|_| VaultError::UnsafePath("NUL in path"))
+    CString::new(value.as_bytes()).map_err(|_| VaultError::UnsafePath("NUL in path".into()))
 }
 fn open_at(directory: &File, name: &CStr, flags: i32, mode: u32) -> io::Result<File> {
     // SAFETY: openat receives a valid directory FD and a terminated name. The
@@ -504,9 +566,13 @@ fn uid() -> u32 {
 fn private_directory(file: &File) -> Result<()> {
     let meta = file.metadata().map_err(io_error("directory metadata"))?;
     if !meta.is_dir() || meta.uid() != uid() || meta.mode() & 0o7777 != 0o700 {
-        return Err(VaultError::UnsafePath(
-            "vault directory must be owned by this user with mode 0700",
-        ));
+        return Err(VaultError::UnsafePath(format!(
+            "directory must be owned by uid {} with mode 0700; found uid {}, gid {}, mode {:04o}",
+            uid(),
+            meta.uid(),
+            meta.gid(),
+            meta.mode() & 0o7777
+        )));
     }
     Ok(())
 }
@@ -515,7 +581,7 @@ fn private_file(file: &File) -> Result<Metadata> {
     if !meta.is_file() || meta.uid() != uid() || meta.mode() & 0o7777 != 0o600 || meta.nlink() != 1
     {
         return Err(VaultError::UnsafePath(
-            "vault/lock files must be regular, single-link, owned by this user, mode 0600",
+            format!("vault/lock file must be regular, single-link, owned by uid {}, mode 0600; found uid {}, gid {}, mode {:04o}, links {}", uid(), meta.uid(), meta.gid(), meta.mode() & 0o7777, meta.nlink()),
         ));
     }
     Ok(meta)
@@ -553,9 +619,18 @@ pub(crate) fn directory(
     create: bool,
     policy: DirectoryPolicy,
 ) -> Result<(File, CString)> {
+    directory_walk(path, create, false, policy).map(|(directory, name, _)| (directory, name))
+}
+
+fn directory_walk(
+    path: &Path,
+    create: bool,
+    inspect: bool,
+    policy: DirectoryPolicy,
+) -> Result<(File, CString, bool)> {
     if uid() == 0 {
         return Err(VaultError::UnsafePath(
-            "run the vault as an unprivileged user",
+            "run the vault as an unprivileged user".into(),
         ));
     }
     let path = if path.is_absolute() {
@@ -572,27 +647,33 @@ pub(crate) fn directory(
             Component::Normal(name) => names.push(cstring(name)?),
             _ => {
                 return Err(VaultError::UnsafePath(
-                    "parent/relative path components are not allowed",
+                    "parent/relative path components are not allowed".into(),
                 ))
             }
         }
     }
     let name = names
         .pop()
-        .ok_or(VaultError::UnsafePath("missing filename"))?;
+        .ok_or(VaultError::UnsafePath("missing filename".into()))?;
     if name.as_bytes().len() > 180 || name.as_bytes().starts_with(b".") {
         return Err(VaultError::UnsafePath(
-            "filename must be non-hidden and at most 180 bytes",
+            "filename must be non-hidden and at most 180 bytes".into(),
         ));
     }
     let mut current = File::open("/").map_err(io_error("open filesystem root"))?;
+    let mut current_path = PathBuf::from("/");
     for (index, part) in names.iter().enumerate() {
         let parent = current.metadata().map_err(io_error("ancestor metadata"))?;
         if !parent.is_dir() || !policy.allows_ancestor(parent.uid(), parent.mode(), uid()) {
-            return Err(VaultError::UnsafePath(
-                "untrusted or writable ancestor directory",
-            ));
+            return Err(VaultError::UnsafePath(format!(
+                "{}: untrusted or writable ancestor directory (uid {}, gid {}, mode {:04o})",
+                current_path.display(),
+                parent.uid(),
+                parent.gid(),
+                parent.mode() & 0o7777
+            )));
         }
+        current_path.push(OsStr::from_bytes(part.to_bytes()));
         let next = match open_at(&current, part, libc::O_RDONLY | libc::O_DIRECTORY, 0) {
             Ok(file) => file,
             Err(error)
@@ -600,37 +681,70 @@ pub(crate) fn directory(
                     && index + 1 == names.len()
                     && error.kind() == io::ErrorKind::NotFound =>
             {
+                if inspect {
+                    return Ok((current, name, true));
+                }
                 // SAFETY: the verified directory FD and terminated single path
                 // component identify only the requested new private directory.
                 let result = unsafe { libc::mkdirat(current.as_raw_fd(), part.as_ptr(), 0o700) };
                 if result != 0 {
-                    return Err(io_error("create private directory")(
-                        io::Error::last_os_error(),
-                    ));
+                    return Err(
+                        io_error("create private directory")(io::Error::last_os_error())
+                            .at(&current_path),
+                    );
                 }
                 current
                     .sync_all()
                     .map_err(io_error("sync new directory entry"))?;
                 open_at(&current, part, libc::O_RDONLY | libc::O_DIRECTORY, 0)
-                    .map_err(io_error("open new directory"))?
+                    .map_err(|error| io_error("open new directory")(error).at(&current_path))?
             }
-            Err(error) => return Err(io_error("open ancestor without symlinks")(error)),
+            Err(error) => {
+                return Err(io_error("open directory without symlinks")(error).at(&current_path))
+            }
         };
         current = next;
     }
-    private_directory(&current)?;
-    Ok((current, name))
+    private_directory(&current).map_err(|e| e.at(&current_path))?;
+    Ok((current, name, false))
 }
 
-pub(crate) fn lock(directory: &File, name: &CStr) -> Result<File> {
+fn writable_directory(directory: &File) -> Result<()> {
+    // SAFETY: the directory FD is live; the fixed dot name is terminated. Check
+    // effective credentials without creating a probe file or changing modes.
+    if unsafe {
+        libc::faccessat(
+            directory.as_raw_fd(),
+            c".".as_ptr(),
+            libc::W_OK | libc::X_OK,
+            libc::AT_EACCESS,
+        )
+    } != 0
+    {
+        return Err(io_error("directory is not writable/searchable")(
+            io::Error::last_os_error(),
+        ));
+    }
+    Ok(())
+}
+
+fn lock_name(name: &CStr) -> Result<CString> {
     let mut lock_name = b".".to_vec();
     lock_name.extend(name.to_bytes());
     lock_name.extend(b".lock");
-    let lock_name =
-        CString::new(lock_name).map_err(|_| VaultError::UnsafePath("invalid lock name"))?;
+    CString::new(lock_name).map_err(|_| VaultError::UnsafePath("invalid lock name".into()))
+}
+
+pub(crate) fn lock(directory: &File, name: &CStr) -> Result<File> {
+    let lock_name = lock_name(name)?;
     let file = open_at(directory, &lock_name, libc::O_RDWR | libc::O_CREAT, 0o600)
         .map_err(io_error("open writer lock"))?;
     private_file(&file)?;
+    exclusive_lock(&file)?;
+    Ok(file)
+}
+
+fn exclusive_lock(file: &File) -> Result<()> {
     // SAFETY: flock only operates on this owned live descriptor. Nonblocking
     // exclusive locking avoids hanging on another daemon's lifetime lock.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
@@ -641,7 +755,7 @@ pub(crate) fn lock(directory: &File, name: &CStr) -> Result<File> {
             io_error("exclusive lock")(error)
         });
     }
-    Ok(file)
+    Ok(())
 }
 
 struct Temporary {

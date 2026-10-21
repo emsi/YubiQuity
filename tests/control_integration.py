@@ -17,7 +17,7 @@ from fido2.ctap import CtapError
 from fido2.ctap2 import Ctap2
 from fido2.ctap2.pin import ClientPin
 from credential_integration import Task, allow, register
-from transport_integration import BINARY, HELPER, device_test_lock, deadline, open_device, wait_removed
+from transport_integration import BINARY, node_arguments, device_test_lock, deadline, open_device, wait_removed
 from vault_integration import PASSWORD, cli
 
 
@@ -78,7 +78,7 @@ class RunningService:
 def service(vault, socket_path):
     with device_test_lock():
         process = subprocess.Popen([str(BINARY), "serve", "--vault", str(vault), "--socket", str(socket_path),
-                                    "--node-helper", str(HELPER)], stdin=subprocess.DEVNULL,
+                                    *node_arguments()], stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         running = RunningService(process, socket_path)
         try:

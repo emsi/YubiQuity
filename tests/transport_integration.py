@@ -21,8 +21,18 @@ from fido2.ctap2 import Ctap2
 from fido2.hid import CtapHidDevice, CTAPHID, get_descriptor, list_descriptors, open_connection
 
 ROOT = Path(__file__).resolve().parents[1]
-BINARY = ROOT / "target/debug/yubiquity"
+BINARY = Path(os.environ.get("YUBIQUITY_TEST_BINARY", ROOT / "target/debug/yubiquity"))
 HELPER = ROOT / "scripts/container-hidraw.py"
+
+
+def node_arguments(mode=None):
+    """Never silently fall back to the helper during native deployment tests."""
+    mode = mode if mode is not None else os.environ.get("YUBIQUITY_TEST_DEVICE_MODE", "container")
+    if mode == "native":
+        return []
+    if mode == "container":
+        return ["--node-helper", str(HELPER)]
+    raise ValueError("YUBIQUITY_TEST_DEVICE_MODE must be native or container")
 
 
 @contextlib.contextmanager
@@ -84,7 +94,7 @@ def daemon(command="probe", test_presence=None, *, vault=None, passphrase=None, 
 
 @contextlib.contextmanager
 def _daemon(command="probe", test_presence=None, *, vault=None, passphrase=None, fail_writes=False):
-    args = [str(BINARY), command, "--node-helper", str(HELPER)]
+    args = [str(BINARY), command, *node_arguments()]
     if test_presence is not None:
         args += ["--test-presence", test_presence]
     secret_fd = None

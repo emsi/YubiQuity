@@ -11,6 +11,11 @@ For a hands-on test with your own browser, follow the
 permissions, a private test vault, PIN setup, both public demo sites, persistence,
 and Firefox/Chrome credential reuse without browser modifications.
 
+Already have a vault? Use `yubiquity run --vault PATH`; it checks basic
+prerequisites before asking for your passphrase and waits for native hidraw
+permissions. `yubiquity doctor --vault PATH` diagnoses without secrets or setting
+changes; `doctor --probe` explicitly adds a temporary device-access check.
+
 ## Current status
 
 The development authenticator creates independent ES256 credentials, supports

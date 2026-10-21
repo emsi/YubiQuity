@@ -9,7 +9,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use yubiquity::{
     authenticator::Authenticator,
-    control, ctap,
+    control, ctap, diagnostics,
     hid::{Engine, Event},
     secret_input, service,
     store::{MemoryStore, Store},
@@ -26,6 +26,17 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Check this process's access and vault without asking for secrets or changing settings.
+    Doctor {
+        #[arg(long)]
+        vault: Option<PathBuf>,
+        /// Also attach and remove a temporary device to verify dynamic hidraw access.
+        #[arg(long)]
+        probe: bool,
+        /// Explicit container-only device-node helper, used only with --probe.
+        #[arg(long, requires = "probe")]
+        node_helper: Option<PathBuf>,
+    },
     /// Create a new encrypted vault, without overwriting any existing file.
     Init {
         #[arg(long)]
@@ -136,10 +147,18 @@ fn main() -> Result<()> {
     let signal = shutdown.clone();
     ctrlc::set_handler(move || signal.store(true, Ordering::Relaxed))?;
     match args.command {
+        Commands::Doctor {
+            vault,
+            probe,
+            node_helper,
+        } => {
+            diagnostics::doctor(vault.as_deref(), probe, node_helper.as_deref())?;
+        }
         Commands::Init {
             vault,
             passphrase_fd,
         } => {
+            Vault::preflight(&vault, true)?;
             eprintln!("Initializing vault {:?}; choose a strong passphrase separate from the browser PIN.", vault);
             let passphrase = secret_input::read(passphrase_fd, true)?;
             let store = Vault::create(&vault, &passphrase)?;
@@ -153,6 +172,8 @@ fn main() -> Result<()> {
             node_helper,
             exit_after,
         } => {
+            Vault::preflight(&vault, false)?;
+            Device::preflight()?;
             eprintln!("Unlocking vault {:?}", vault);
             let passphrase = secret_input::read(passphrase_fd, false)?;
             let store = Vault::open(&vault, &passphrase)?;
@@ -172,6 +193,7 @@ fn main() -> Result<()> {
             passphrase_fd,
             show_users,
         } => {
+            Vault::preflight(&vault, false)?;
             eprintln!("Reading metadata from vault {:?}", vault);
             let vault_name = serde_json::to_value(&vault)?;
             let passphrase = secret_input::read(passphrase_fd, false)?;
@@ -213,6 +235,13 @@ fn main() -> Result<()> {
             let request = match action {
                 ControlAction::Status => control::Request::Status {},
                 ControlAction::Unlock { passphrase_fd } => {
+                    let status = control::call(&socket, &control::Request::Status {})?;
+                    if !status.ok || status.state != "locked" {
+                        bail!(
+                            "service is not locked (state: {}); no unlock passphrase needed",
+                            status.state
+                        );
+                    }
                     let passphrase = secret_input::read(passphrase_fd, false)?;
                     control::Request::Unlock {
                         passphrase: passphrase.to_vec(),
@@ -243,6 +272,7 @@ fn main() -> Result<()> {
                     hex(&id)
                 );
             }
+            Vault::preflight(&vault, false)?;
             eprintln!(
                 "Deleting exactly credential {} from vault {:?}",
                 hex(&id),

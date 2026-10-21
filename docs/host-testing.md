@@ -11,6 +11,37 @@ this walkthrough is how to verify your host's device permissions and browser
 package. Use disposable demo accounts, not an important account's only passkey.
 This is software key storage, not hardware protection or trusted attestation.
 
+## Already set up? Start here
+
+If you already created the test vault in this guide, **do not initialize it again**.
+After pulling changes, rebuild and run it:
+
+```bash
+cd "$HOME/git/YubiQuity"
+CARGO_TARGET_DIR=target/host cargo build --release --locked &&
+    target/host/release/yubiquity run --vault "$HOME/.local/share/yubiquity/host-test/credentials.yq"
+```
+
+Startup checks the existing vault and UHID access before asking for the
+passphrase. It then waits for the exact hidraw node to become accessible while
+udev applies permissions. It never changes device permissions, invokes a helper
+unless explicitly selected, or creates a missing vault during `run`.
+
+If something fails, this optional check reports the executable, **running
+process** groups, vault path/envelope, and installed rule comparison without
+asking for a password or changing settings:
+
+```bash
+target/host/release/yubiquity doctor --vault "$HOME/.local/share/yubiquity/host-test/credentials.yq"
+```
+
+Add `--probe` to also attach and remove a temporary credential-free device and
+check dynamic hidraw access. Plain `doctor` does not create a device. A failed
+attachment now reports the node's mode/UID/GID and process groups before the
+temporary device is removed. It does not mean the vault needs reinitializing.
+
+The remaining setup steps are for a first installation, not every launch.
+
 ## 1. Build on the host
 
 Open a **host terminal**, as your normal desktop user:

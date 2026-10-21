@@ -18,7 +18,7 @@ jobs:
       - name: Install independent verifiers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3-fido2 python3-cryptography python3-argon2 python3-nacl udev docker-compose-v2
+          sudo apt-get install -y --no-install-recommends python3-fido2 python3-cryptography python3-argon2 python3-nacl python3-gi gir1.2-umockdev-1.0 umockdev udev docker-compose-v2
           rustup show active-toolchain
       - name: Format, lint and test
         run: |
@@ -29,12 +29,14 @@ jobs:
           cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
           cargo test --all-targets --locked
           cargo build --locked
+          /usr/bin/python3 tests/startup.py
           /usr/bin/python3 tests/vault_integration.py VaultTests.test_group_writable_user_ancestors_support_cli_init_and_list
           /usr/bin/python3 tests/browser/test_rp.py
           /usr/bin/python3 tests/browser/test_ui.py
           /usr/bin/python3 tests/browser/test_public_sites.py
           /usr/bin/python3 tests/vault_crypto.py
           /usr/bin/python3 tests/packaging.py
+          sudo -n /usr/bin/python3 tests/udev_behavior.py
           /usr/bin/python3 tests/container_seccomp.py
       - name: Audit production and fuzz dependencies
         run: |

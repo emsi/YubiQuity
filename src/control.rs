@@ -363,6 +363,10 @@ impl Server {
             framed.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
             framed.extend(bytes);
             client.outgoing = Some(framed);
+            // Expensive unlock/attachment work is synchronous and bounded by
+            // its own stages. Give its reply a fresh flush window, rather than
+            // discarding it because the request arrived >5 seconds ago.
+            client.accepted = Instant::now();
         }
         Ok(())
     }
@@ -374,7 +378,12 @@ pub fn call(path: &Path, request: &Request) -> Result<Response> {
     socket_metadata(&path.alias)?;
     let mut stream = connect(&path.alias).context("connect local control service")?;
     same_user(&stream)?;
-    stream.set_read_timeout(Some(CLIENT_LIFETIME))?;
+    let reply_timeout = if matches!(request, Request::Unlock { .. }) {
+        Duration::from_secs(20)
+    } else {
+        CLIENT_LIFETIME
+    };
+    stream.set_read_timeout(Some(reply_timeout))?;
     stream.set_write_timeout(Some(CLIENT_LIFETIME))?;
     let mut bytes = Zeroizing::new(Vec::with_capacity(MAX_WIRE));
     serde_json::to_writer(&mut *bytes, request)?;

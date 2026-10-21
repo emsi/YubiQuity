@@ -263,6 +263,8 @@ pub fn serve(
     if options.test_presence.is_some() {
         anyhow::bail!("persistent service cannot use scripted presence");
     }
+    crate::vault::Vault::preflight(vault, false)?;
+    Device::preflight()?;
     let mut server = control::Server::bind(socket)?;
     eprintln!("Control service listening, locked. Unlock through the local client to attach.");
     while !shutdown.load(Ordering::Acquire) {
