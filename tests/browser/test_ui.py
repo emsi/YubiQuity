@@ -47,6 +47,24 @@ class UiTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["env"], self.display.env)
 
     @patch("ceremonies.subprocess.run")
+    def test_already_registered_error_can_use_close_button(self, run):
+        word = {"text": "Close", "conf": "95", "left": "250", "top": "275", "width": "50", "height": "20"}
+        text = "Try a different device You already registered this device Close Try again"
+        self.dialog(text, [word])
+        self.assertEqual(self.display.chrome_dismiss_error(
+            "155.0", ("try a different device", "you already registered this device")), text)
+        self.assertEqual(run.call_args.args[0], ["xdotool", "mousemove", "585", "375", "click", "1"])
+        self.dialog(text, [])
+        self.assertEqual(self.display.chrome_dismiss_error(
+            "155.0", ("try a different device", "you already registered this device")), text)
+        self.assertEqual(run.call_args.args[0], ["xdotool", "mousemove", "585", "376", "click", "1"])
+        text = "Try a different security key You're using a security key that's not registered with this website"
+        self.dialog(text, [])
+        self.assertEqual(self.display.chrome_dismiss_error(
+            "155.0", ("try a different security key", "not registered with this website")), text)
+        self.assertEqual(run.call_args.args[0], ["xdotool", "mousemove", "585", "376", "click", "1"])
+
+    @patch("ceremonies.subprocess.run")
     def test_chooser_selects_only_the_requested_word_box(self, run):
         words = [{"text": name, "conf": "95", "left": "65", "top": str(top),
                   "width": "40", "height": "20"} for name, top in (("bob", 240), ("alice", 305))]
@@ -65,6 +83,23 @@ class UiTests(unittest.TestCase):
     def test_unknown_browser_ui_version_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "inspect the native UI"):
             IsolatedDisplay(Path("unused-test-artifacts")).chrome_dialog("156.0")
+
+    @patch("ceremonies.subprocess.run")
+    def test_error_dismissal_requires_exact_failure_and_bounded_cancel_button(self, run):
+        expected = ("something went wrong", "your identity couldn't be verified")
+        text = "Something went wrong Your identity couldn’t be verified Cancel Try again"
+        word = {"text": "Cancel", "conf": "95", "left": "250", "top": "255", "width": "50", "height": "20"}
+        for wrong in ("PIN required Cancel", "Something went wrong Cancel", "Choose a passkey Cancel"):
+            self.dialog(wrong, [word])
+            self.assertIsNone(self.display.chrome_dismiss_error("155.0", expected))
+        for words in ([], [word, word], [dict(word, conf="20")], [dict(word, top="5")]):
+            self.dialog(text, words)
+            self.assertIsNone(self.display.chrome_dismiss_error("155.0", expected))
+        run.assert_not_called()
+        self.dialog(text, [word])
+        self.assertEqual(self.display.chrome_dismiss_error("155.0", expected), text)
+        self.assertEqual(run.call_args.args[0], ["xdotool", "mousemove", "585", "355", "click", "1"])
+        self.assertEqual(run.call_args.kwargs["env"], self.display.env)
 
     def test_namespace_and_seccomp_layers_must_all_be_reported_active(self):
         status = ("Layer 1 Sandbox\tNamespace\nPID namespaces\tYes\nNetwork namespaces\tYes\n"

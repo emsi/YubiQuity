@@ -26,13 +26,14 @@ inspect a pending request, explicitly approve/deny it, or lock/detach again.
 **This is still under development, not a completed release.** After container
 recreation with the supplied seccomp profile, Chrome for Testing 155.0.8059.84
 passes registration/login, required-PIN discoverable credentials, two-account
-selection, and encrypted-vault crash recovery. Firefox/Chrome credential reuse
+selection, encrypted-vault crash recovery, the locked-service path and the full
+local negative/recovery suite. Firefox/Chrome credential reuse
 passes in both directions with and without required UV. Chrome reports active
 namespace and seccomp-BPF sandboxes; no added container capabilities or AppArmor
 relaxation was needed. See the [test report](docs/test-report.md#chrome-container-validation-2026-10-21).
 
-Agent host access remains excluded. Chrome's complete negative/recovery suite,
-ordinary distribution packages, public-site smoke tests and deployment validation
+Agent host access remains excluded. Ordinary distribution packages,
+public-site smoke tests and deployment validation
 remain unfinished. Use disposable test accounts; positive test results are not
 a universal browser compatibility or security certification claim.
 
@@ -297,6 +298,8 @@ rules. Actual host permissions and systemd runtime behavior remain separate gate
 /usr/bin/python3 tests/browser/ceremonies.py --browser chrome --pin-test --attach-after-start
 /usr/bin/python3 tests/browser/accounts.py --browser chrome
 /usr/bin/python3 tests/browser/persistence.py --browser chrome
+/usr/bin/python3 tests/browser/service.py --browser chrome
+/usr/bin/python3 tests/browser/negative.py --browser chrome
 ```
 
 The test fixture binds only to localhost. It checks one-use challenges, exact
@@ -307,7 +310,7 @@ in-memory state. The persistence test instead drives the normal terminal approva
 path with a disposable encrypted vault, kills the daemon, then verifies login
 through new daemon/browser instances against the same RP registration.
 `service.py` exercises the locked service with explicit CLI approvals, locks and
-re-unlocks it, then verifies saved-credential login in a fresh Firefox profile.
+re-unlocks it, then verifies saved-credential login in a fresh Firefox or Chrome profile.
 `negative.py` checks cancelled/denied registration and login, stale approvals,
 excluded and unknown credentials, browser RP rejection, wrong-PIN recovery,
 and lock/detach during pending login followed by reattachment/recovery in the
@@ -315,9 +318,12 @@ same browser session. It distinguishes a browser error
 from an RP rejection so an unrelated failure cannot satisfy an expected result.
 Its strict RP requests direct attestation and explicitly rejects the device's
 `none` result. This is a negative policy fixture, not a manufacturer trust store.
-The negative harness also accepts `--browser chrome`, but that complete suite is
-not yet verified: Chrome's UI after an explicit denial needs additional test-side
-handling. This does not invalidate the separately verified positive scenarios.
+The full negative suite passes in both Firefox and Chrome. Chrome shows native
+retry/error sheets for denial, exclusion and an unknown credential; the harness
+recognizes the specific failure before clicking Cancel/Close and checking the
+browser's rejection. It never cancels an ordinary presence/PIN sheet just to
+manufacture the expected error. The denial/exclusion checks also verify unchanged
+vault contents and rejected stale approval tokens.
 
 For another stock installation, set `YUBIQUITY_FIREFOX_BINARY` or
 `YUBIQUITY_CHROME_BINARY` to its executable path. Matching driver paths can be

@@ -203,6 +203,51 @@ class TransportTests(unittest.TestCase):
             with open_device(path) as device:
                 self.assertEqual(device.call(CTAPHID.PING, b"recovered"), b"recovered")
 
+    def test_malformed_lengths_and_sequence_recover_on_the_same_channel(self):
+        with daemon() as (_, path, _), deadline(10), open_device(path) as device:
+            channel = device._channel_id
+            fd = os.open(path, os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC)
+            try:
+                def write(report):
+                    self.assertEqual(os.write(fd, b"\0" + report), 65)
+
+                def receive():
+                    self.assertTrue(select.select([fd], [], [], 2)[0], "missing HID response")
+                    return os.read(fd, 64)
+
+                for command, length in ((0x81, 7610), (0x81, 65535), (0x90, 0)):
+                    write(struct.pack(">IBH", channel, command, length).ljust(64, b"\0"))
+                    self.assertEqual(receive()[:8], struct.pack(">IBHB", channel, 0xbf, 1, 3))
+                write(struct.pack(">IBH", channel, 0x81, 100).ljust(64, b"\0"))
+                write(struct.pack(">IB", channel, 1).ljust(64, b"\0"))  # sequence 0 was required
+                self.assertEqual(receive()[:8], struct.pack(">IBHB", channel, 0xbf, 1, 4))
+                ping = struct.pack(">IBH", channel, 0x81, 2) + b"ok"
+                write(ping.ljust(64, b"\0"))
+                self.assertEqual(receive()[:len(ping)], ping)
+            finally:
+                os.close(fd)
+
+    def test_repeated_malformed_cbor_is_rejected_without_prompt_and_recovers(self):
+        with daemon("dev-run") as (process, path, _), deadline(20), open_device(path) as device:
+            malformed = (
+                b"\xa1",                         # truncated map
+                b"\xa2\x01\x00\x01\x01",        # duplicate map key
+                b"\x18\x01",                    # noncanonical integer
+                b"\x9f\xff",                    # indefinite collection
+                b"\x81" * 13 + b"\x00",        # nesting bound
+                b"\x99\x01\x01",               # collection bound
+                b"\x5b" + b"\xff" * 8,          # enormous claimed byte-string length
+                b"\x61\xff",                    # invalid UTF-8
+            )
+            for iteration in range(8):
+                for payload in malformed:
+                    with self.subTest(iteration=iteration, payload=payload.hex()):
+                        self.assertEqual(device.call(CTAPHID.CBOR, b"\x01" + payload), b"\x12")
+                self.assertTrue(Ctap2(device).get_info().options["rk"])
+                self.assertEqual(device.call(CTAPHID.PING, b"recovered"), b"recovered")
+            self.assertFalse(select.select([process.stdout], [], [], 0)[0], "malformed input prompted for presence")
+            self.assertIsNone(process.poll())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

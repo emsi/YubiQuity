@@ -54,6 +54,37 @@ Chrome's complete negative suite remains unfinished: an exploratory run passed
 registration abort, then was interrupted while investigating the native denial UI.
 No public-site registration was performed.
 
+### Completed local negative/recovery coverage (2026-10-21)
+
+The earlier unfinished negative-suite note is superseded by these subsequent runs:
+
+| Scenario | Passing run under `target/browser-results/` |
+|---|---|
+| Chrome: ten expected rejections and five verified successful ceremonies | `negative-1792591258884417216` |
+| Firefox stable: same full negative/recovery suite after shared harness changes | `negative-1792591371819224685` |
+| Chrome: locked service, explicit approvals, lock/re-unlock, fresh profile and both login forms | `service-1792591370654616865` |
+
+Chrome's denial, exclusion and unknown-credential flows display native retry
+sheets. The harness records their specific failure text, then uses the normal
+Cancel/Close button before checking the exact JavaScript error. Denial is not
+claimed to reject the promise without that user interaction. Vault comparisons,
+actual request tokens, stale-token rejection and recovery assertions remain in
+place. Wrong PIN produces the native incorrect-PIN feedback; correct PIN restores
+eight retries and succeeds with UV. Lock during actual login approval produces
+`NotAllowedError`; re-unlock rejects the old token and preserves both login forms.
+The strict RP rejects Chrome's `none` attestation, as it does Firefox's.
+
+The recreated container also passes 52 Rust tests, rustfmt, Clippy with warnings
+denied, release build, seven RP tests, nine offline UI guards, independent vault
+crypto, two packaging checks and all five seccomp/Compose checks. Only the Compose
+plugin was reinstalled for offline configuration validation, not a Docker engine.
+The existing 27-case real-device suite passes again (282.228 seconds including
+waiting for concurrent browser tests). Two additional real-hidraw tests pass:
+oversized/empty/invalid-sequence frames recover on the same channel, and 64
+malformed CBOR requests fail without presence prompts while GetInfo/PING continue
+working. These are bounded-input/recovery checks, not an exhaustive memory audit.
+Public-site tests were subsequently authorized and are pending execution.
+
 ## Environment and versions
 
 - Ubuntu 24.04.3 container, Linux 6.8.0-147-generic, x86-64, UID 1000 daemon.
@@ -71,7 +102,7 @@ No public-site registration was performed.
 |---|---|---|
 | Mozilla Firefox stable 158.0.1, Linux x86-64 en-US archive | Basic/resident/required-UV, native two-account selection, persistence/service, negative cases and hotplug pass; cross-browser and account regression pass after recreation | Historical runs warned `EPERM`; the current namespace probes pass, but Firefox sandbox layers were not independently audited |
 | Mozilla Firefox ESR 153.5.1esr, Linux x86-64 en-US archive | Same scenario set passes with the unchanged authenticator | Same namespace warning; native menu UI test adapter has inspected ESR coordinates |
-| Chrome for Testing 155.0.8059.84 | Sandbox startup, basic/resident/required-UV, native two-account selection, persistence and bidirectional Firefox reuse pass | Complete Chrome negative/recovery suite and other Chrome packages remain unverified |
+| Chrome for Testing 155.0.8059.84 | Sandbox startup, basic/resident/required-UV, native two-account selection, persistence/service, full local negative/recovery and bidirectional Firefox reuse pass | Other Chrome packages remain unverified; retry/error-sheet dismissal is part of the observed native UI flow |
 | Ordinary stable distribution Chrome/Chromium | Not validated; deferred | Chrome for Testing results do not validate other packages |
 | Snap/Flatpak browser packages | Not validated; deferred | Confined-package runtime and device access have not been tested; no host execution or confinement bypass is proposed |
 
@@ -194,9 +225,8 @@ browser security features.
 
 | Check (including deferred coverage) | Current state |
 |---|---|
-| Chromium-family negative/recovery cases | Positive Chrome for Testing ceremonies pass; complete native denial/cancellation/wrong-PIN/lock-during-login matrix remains unfinished |
 | Other browser packages | Cross-browser reuse and two-account selection pass for the named Firefox/Chrome builds only |
-| Browser hotplug | Firefox before/after startup and pending-login removal/recovery verified; Chrome before/after startup and crash/restart pass, but pending-login removal/recovery remains unverified |
+| Browser hotplug | Firefox/Chrome before/after startup, crash/restart and pending-login removal/recovery verified for the recorded builds; other deployments remain unverified |
 | Storage deployment validation | Local-filesystem/crash tests pass; not a claim of tested power-loss behavior on every filesystem/storage stack |
 | Release packaging/matrix | Unit and scoped udev rules implemented; host application, systemd-user execution, ordinary stable distribution Chrome/Chromium and confined packages remain unverified; Mozilla ESR archive scenarios pass |
 | Broader release validation | Target deployment/browser matrix and agreed disposable public-site smoke tests remain; longer fuzz campaigns are additional assurance, and hosted CI execution has not been observed |

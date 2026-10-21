@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Firefox through the normal locked service and explicit control approvals.
+"""Stock browsers through the normal locked service and explicit control approvals.
 
 The harness explicitly approves disposable requests through the real local CLI;
 the persistent daemon has no automatic-presence backend. No systemd is needed.
 """
+import argparse
 from pathlib import Path
 import tempfile
 import threading
@@ -50,6 +51,9 @@ class ControlApprovals:
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--browser", choices=("firefox", "chrome"), default="firefox")
+    args = parser.parse_args()
     artifacts = ROOT / "target/browser-results" / ("service-" + str(time.time_ns()))
     artifacts.mkdir(parents=True)
     print(f"Artifacts: {artifacts}", flush=True)
@@ -60,7 +64,7 @@ def main():
         with Fixture() as fixture, IsolatedDisplay(artifacts) as display, service(vault, socket) as running:
             with open_device(running.unlock()) as device:
                 ClientPin(Ctap2(device)).set_pin("1234")
-            with ControlApprovals(socket), WebDriver("firefox", artifacts, True, display) as browser:
+            with ControlApprovals(socket), WebDriver(args.browser, artifacts, True, display) as browser:
                 browser.navigate(fixture.origin)
                 registration = browser.ceremony("register", enter_pin=True, username="alice", uv="required", resident=True)
             assert ctl(socket, "lock")["state"] == "locked"
@@ -68,7 +72,7 @@ def main():
             running.unlock()
             # A fresh browser and new authenticator attachment must reuse the
             # saved credential/PIN, without re-enrollment or a browser mode.
-            with ControlApprovals(socket), WebDriver("firefox", artifacts, True, display) as browser:
+            with ControlApprovals(socket), WebDriver(args.browser, artifacts, True, display) as browser:
                 browser.navigate(fixture.origin)
                 for discoverable in (False, True):
                     result = browser.ceremony("authenticate", enter_pin=True, username="alice", uv="required", discoverable=discoverable)

@@ -1,6 +1,6 @@
 # Software FIDO2 Authenticator for Browsers
 
-Status: implementation in progress; sandboxed Chrome positive-path and Firefox interoperability checks now pass in the recreated container (2026-10-21). Agent host access is not authorized.
+Status: implementation in progress; sandboxed Chrome positive, negative/recovery and Firefox interoperability checks now pass in the recreated container (2026-10-21). Authorized public-site smoke tests and final audit remain. Agent host access is not authorized.
 
 Progress and test evidence: [implementation ledger](docs/implementation-status.md).
 
@@ -12,7 +12,7 @@ This plan supersedes the earlier `firefox-virtual-fido2-kernel-module.md` propos
 
 Build a software-backed FIDO2 authenticator that browsers use through their normal external security-key path. Websites should register and authenticate its credentials through ordinary WebAuthn, without extensions, injected JavaScript, browser patches, special WebAuthn preferences, or site-specific integration.
 
-Browser independence remains a design requirement: use one device and protocol implementation without browser-specific operating modes. Validation covers stock Firefox stable/ESR and Chrome for Testing inside this container. The user's narrowly scoped container-policy update made sandboxed Chrome runnable; registration, PIN-required discoverable login, account selection, persistence and bidirectional Firefox reuse now pass. The complete Chrome negative/recovery suite and other browser packages remain unverified. If further Chrome validation requires broad privilege changes, defer it without blocking Firefox work. Unsupported browser/OS combinations cannot be made to support security keys by this daemon.
+Browser independence remains a design requirement: use one device and protocol implementation without browser-specific operating modes. Validation covers stock Firefox stable/ESR and Chrome for Testing inside this container. The user's narrowly scoped container-policy update made sandboxed Chrome runnable; registration, PIN-required discoverable login, account selection, persistence, locked-service operation, the full local negative/recovery suite and bidirectional Firefox reuse now pass. Other browser packages remain unverified. If further Chrome validation requires broad privilege changes, defer it without blocking Firefox work. Unsupported browser/OS combinations cannot be made to support security keys by this daemon.
 
 “Behaves like a hardware key” means normal registration, passkey login, PIN entry, user approval, and error handling. Concealing the implementation from host inspection or reproducing device fingerprints is outside scope. Trusted manufacturer attestation is an explicit exception.
 
@@ -219,7 +219,7 @@ The RP fixture should generate unpredictable challenges, validate origin and RP 
 | Two daemon instances using one vault | Second writer refused |
 | Trusted-attestation policy | Expected rejection, recorded as outside supported scope |
 
-Use stock Firefox stable/ESR and sandboxed Chrome for Testing on Linux inside this container, disposable profiles and the real external HID path. Record positive and negative coverage separately; current Chrome successes do not establish the unfinished error/recovery matrix. Ordinary distribution and confined-package coverage remain unverified. Do not request an agent host session, add broad capabilities, or disable browser/container sandboxing to obtain a passing result. A physical security key is optional for comparison and is not a prerequisite.
+Use stock Firefox stable/ESR and sandboxed Chrome for Testing on Linux inside this container, disposable profiles and the real external HID path. Record positive and negative coverage separately; both now pass for the recorded builds, including error/recovery. Ordinary distribution and confined-package coverage remain unverified. Do not request an agent host session, add broad capabilities, or disable browser/container sandboxing to obtain a passing result. A physical security key is optional for comparison and is not a prerequisite.
 
 Keep CI tests repeatable without credentials for public websites. After the local fixture passes, use a small set of agreed public sites with disposable accounts as compatibility smoke tests. Account sign-in and any unrelated second factor remain with the user.
 
@@ -265,4 +265,4 @@ Useful user input, but not a blocker for starting implementation:
 1. Which two or three sites or application flows matter most after the local RP passes?
 2. Any preference for the approval interface? Terminal approval is the first-release default; a desktop dialog can follow.
 
-Container UHID/hidraw access and sandboxed Chrome startup are verified after the user's recreation. Continue in-container testing of remaining Chrome error/recovery scenarios and selected public sites when authorized. No browser protocol patch, browser modification or agent host session is part of the design. See the [container setup](docs/container-uhid.md#applying-the-chrome-seccomp-profile) and [test report](docs/test-report.md#chrome-container-validation-2026-10-21) for the permission boundary and exact verified scope.
+Container UHID/hidraw access and sandboxed Chrome startup are verified after the user's recreation; the local Chrome error/recovery scenarios now pass. Continue with the authorized webauthn.io and Yubico technical-demo smoke tests, followed by the final requirement audit. No browser protocol patch, browser modification or agent host session is part of the design. See the [container setup](docs/container-uhid.md#applying-the-chrome-seccomp-profile) and [test report](docs/test-report.md#chrome-container-validation-2026-10-21) for the permission boundary and exact verified scope.

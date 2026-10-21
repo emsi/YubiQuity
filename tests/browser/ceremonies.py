@@ -149,6 +149,38 @@ class IsolatedDisplay:
         subprocess.run(["xdotool", "mousemove", "690", "394", "click", "1"], env=self.env, check=True, timeout=3)
         return message
 
+    def chrome_dismiss_error(self, version, expected_text):
+        # Chrome keeps some authenticator failures in a native retry sheet.
+        # Close only the explicitly expected failure, never a PIN/presence or
+        # account-selection sheet just to manufacture a NotAllowedError.
+        screenshot, message, normalized, words = self.chrome_dialog(version)
+        normalized = normalized.replace("\u2019", "'")
+        if not all(part.lower() in normalized for part in expected_text):
+            return None
+        matches = [word for word in words if word["text"].lower() in ("cancel", "close")
+                   and float(word["conf"]) >= 60]
+        close_sheets = (
+            ("try a different device", "you already registered this device"),
+            ("try a different security key", "not registered with this website"),
+        )
+        if not matches and any(all(part in normalized for part in sheet) for sheet in close_sheets):
+            # Inspected Chrome 155 exclusion/unknown-key sheets. OCR recognizes the body but
+            # reads its small Close label as "cose". As with Continue above,
+            # use the inspected button only after recognizing this exact sheet.
+            x, y = 585, 376
+        elif len(matches) == 1:
+            word = matches[0]
+            x = 310 + int(word["left"]) + int(word["width"]) // 2
+            y = 90 + int(word["top"]) + int(word["height"]) // 2
+        else:
+            return None
+        if not (330 <= x <= 740 and 300 <= y <= 460):
+            return None
+        screenshot.save(self.artifacts / f"chrome-error-{time.time_ns()}.png")
+        subprocess.run(["xdotool", "mousemove", str(x), str(y), "click", "1"],
+                       env=self.env, check=True, timeout=3)
+        return message
+
     def select_test_account(self, index, version):
         if index not in (0, 1):
             raise ValueError("the fixture account selector accepts only indexes 0 and 1")
@@ -307,7 +339,9 @@ class WebDriver:
         self.command("POST", "/url", {"url": origin})
 
     def ceremony(self, kind, *, enter_pin=False, pin_sequence=None, account_choice=None,
-                 expected_error=None, error_contains=None, during_wait=None, **settings):
+                 expected_error=None, error_contains=None, chrome_error=None, during_wait=None, **settings):
+        if chrome_error is not None and (expected_error is None or not chrome_error):
+            raise ValueError("native error dismissal requires an explicit expected rejection and sheet text")
         if account_choice is not None and (self.family != "firefox" or self.display is None):
             raise ValueError("account popup automation currently requires Firefox on an isolated display")
         pins = list(pin_sequence) if pin_sequence is not None else (["1234"] if enter_pin else [])
@@ -320,6 +354,8 @@ class WebDriver:
         chrome_ui_checked_at = 0
         chrome_account_attempts = 0
         chrome_account_clicked_at = 0
+        chrome_error_attempts = 0
+        chrome_error_clicked_at = 0
         while time.monotonic() < end:
             try:
                 result = self.script("return window.result")
@@ -360,6 +396,18 @@ class WebDriver:
                 return result
             if during_wait is not None:
                 during_wait(self)
+            if (self.family == "chrome" and not pins and chrome_error is not None and chrome_error_attempts < 3
+                    and time.monotonic() - chrome_error_clicked_at > 1
+                    and time.monotonic() - chrome_ui_checked_at > 0.5):
+                if self.display is None:
+                    raise RuntimeError("Chrome error dismissal requires the test-owned isolated display")
+                chrome_ui_checked_at = time.monotonic()
+                message = self.display.chrome_dismiss_error(self.version, chrome_error)
+                if message is not None:
+                    chrome_error_attempts += 1
+                    chrome_error_clicked_at = time.monotonic()
+                    self.record({"event": "native-error-dismissed", "message": message,
+                                 "attempt": chrome_error_attempts, "recognition": "isolated-display-ocr"})
             if self.family == "chrome" and pins and time.monotonic() - chrome_ui_checked_at > 0.5:
                 if self.display is None:
                     raise RuntimeError("Chrome PIN typing requires the test-owned isolated display")

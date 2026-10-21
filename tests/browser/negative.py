@@ -15,6 +15,8 @@ from control_integration import service, ctl
 from transport_integration import wait_removed
 from vault_integration import cli
 
+DENIED_SHEET = ("something went wrong", "your identity couldn't be verified")
+
 
 class Presence:
     def __init__(self, socket, action="approve"):
@@ -73,6 +75,7 @@ def main():
                 for action, error in (("abort", "AbortError"), ("deny", "NotAllowedError")):
                     presence = Presence(socket, action)
                     browser.ceremony("register", username="alice", during_wait=presence,
+                                     chrome_error=DENIED_SHEET if action == "deny" else None,
                                      expected_error=("browser", error))
                     assert presence.tokens, f"{action} did not reach actual registration approval"
                     presence.drained()
@@ -87,6 +90,7 @@ def main():
                 for action, error in (("abort", "AbortError"), ("deny", "NotAllowedError")):
                     presence = Presence(socket, action)
                     browser.ceremony("authenticate", username="alice", during_wait=presence,
+                                     chrome_error=DENIED_SHEET if action == "deny" else None,
                                      expected_error=("browser", error))
                     assert presence.tokens, f"{action} did not reach actual assertion approval"
                     presence.drained()
@@ -94,6 +98,7 @@ def main():
 
                 excluded = Presence(socket)
                 browser.ceremony("register", username="alice", during_wait=excluded,
+                                 chrome_error=("try a different device", "you already registered this device"),
                                  expected_error=("browser", "InvalidStateError"))
                 excluded.drained()
                 assert len(fixture.credentials) == 1 and vault.read_bytes() == saved_vault
@@ -104,6 +109,7 @@ def main():
                     assert not ctl(socket, "status").get("pending")
                 unknown = Presence(socket)
                 browser.ceremony("authenticate", username="alice", unknownCredential=True,
+                                 chrome_error=("try a different security key", "not registered with this website"),
                                  during_wait=unknown, expected_error=("browser", "NotAllowedError"))
                 unknown.drained()
                 assert vault.read_bytes() == saved_vault
