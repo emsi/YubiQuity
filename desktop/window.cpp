@@ -107,7 +107,7 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
   connect(&watch, &QProcess::finished, this, [this] {
     if (!stopping)
       failure(
-          tr("Desktop connection closed. The key is being locked.\n%1")
+          tr("Desktop connection closed. No requests can be approved here.\n%1")
               .arg(QString::fromUtf8(watch.readAllStandardError()).trimmed()));
   });
   connect(&watch, &QProcess::errorOccurred, this,
@@ -251,6 +251,7 @@ void Window::stopService() {
     }
   }
   runtime.reset();
+  watchBuffer.clear();
   erase(heldSecret);
   model = SnapshotModel{};
   dismissedToken.clear();
@@ -269,6 +270,10 @@ void Window::failure(const QString &message) {
 }
 
 void Window::readSnapshots() {
+  if (stopping) {
+    watch.readAllStandardOutput();
+    return;
+  }
   watchBuffer += watch.readAllStandardOutput();
   if (watchBuffer.size() > 65536) {
     failure(tr("Oversized service response."));
@@ -481,10 +486,19 @@ void Window::unlockWith(QByteArray secret) {
 }
 
 void Window::selectVault(bool newVault) {
+  auto defaultDirectory =
+      QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
+      "/yubiquity/vault";
+  // Explicit creation action only. umask is 0077; do not chmod existing paths.
+  // The Rust vault preflight still validates every ancestor at actual use time.
+  if (newVault && !QDir().mkpath(defaultDirectory)) {
+    detail->setText(tr("Could not create the application data directory. Check "
+                       "its permissions."));
+    return;
+  }
   auto path = newVault ? QFileDialog::getSaveFileName(
                              this, tr("Create a new encrypted vault"),
-                             QDir::homePath() +
-                                 "/.local/share/yubiquity/vault/credentials.yq",
+                             defaultDirectory + "/credentials.yq",
                              tr("YubiQuity vault (*.yq)"))
                        : QFileDialog::getOpenFileName(
                              this, tr("Open an existing encrypted vault"),

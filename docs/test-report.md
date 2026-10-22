@@ -12,6 +12,52 @@ The user subsequently recreated the container with the supplied seccomp policy.
 Chrome is now runnable and the positive interoperability scenarios below pass.
 Host deployment remains outside authorized execution scope and unverified.
 
+## Desktop UX increment (2026-10-22)
+
+This is a new UI acceptance track, not a rerun of the browser matrix below.
+Implemented a Qt 6.4-compatible Widgets application with pinentry-qt 1.2.1,
+using the Rust `control watch` bridge and existing one-shot control commands.
+No browser, CTAP capability advertisement, trusted attestation, host permission,
+or host desktop setting was modified.
+
+Passing checks:
+
+- `cargo test --all-targets --locked`: 72 tests. New coverage includes bounded
+  versioned snapshots, single-watcher enforcement, heartbeat/coalescing, loss
+  latching, bridge version/sequence/size/rejection checks and non-renewable
+  daemon approval deadlines. Formatting and strict Clippy pass.
+- `cmake --build target/desktop -j2`: Qt 6.4.2, C++17, warnings-as-errors.
+- `YUBIQUITY_TEST_BACKEND="$PWD/target/debug/yubiquity" ctest --test-dir target/desktop --output-on-failure`:
+  11 substantive offline Qt cases pass (13 including Qt setup/cleanup).
+  Four native-display cases intentionally skip here and run in the next command.
+  Covers plain-text/control-character display, hidden tokens, default Cancel,
+  exact-token single decisions, Escape/window close, expiration/non-renewal,
+  destructive reset wording, snapshot validation, Assuan decoding, real bridge
+  approval/cancellation/disconnect, session-lock handler, actual vault FD input,
+  and child death after parent SIGKILL. Some cases cover multiple checks.
+- `/usr/bin/python3 tests/desktop_native.py`: actual graphical pinentry unlock,
+  create/confirm and Cancel pass on an independently created Xvfb display.
+  The actual GUI executable passes D-Bus second-launch activation and SIGKILL
+  cleanup of its real Rust watch child against a test-only Unix socket fixture.
+  A normal approval-dialog screenshot was also rendered and inspected.
+  Latest artifacts: `target/desktop-native-results/1792675200450806658/`.
+- `/usr/bin/python3 tests/startup.py`: all seven existing startup checks pass.
+- `desktop-file-validate desktop/org.yubiquity.Desktop.desktop`: passes (only
+  a non-failing optional category hint).
+
+The socket fixture is not an authenticator, and these are not WebAuthn success
+claims. Native test screenshots were taken before typing disposable test secrets.
+No existing credential vault or host graphical session was used. CI now includes
+these commands/dependencies; a hosted CI result is not claimed.
+
+Blocked acceptance gate: `/dev/uhid` remains `root:root 0600` in this container.
+UID 1000 needs read/write access before a real GUI → UHID → browser ceremony can
+be tested. Do not replace this gate with root-run GUI tests or declare old
+CLI/browser results to be GUI validation. Also pending: real first-use flow,
+PIN-management/installation polish, actual KDE/Wayland activation/tray behavior,
+and actual screen-lock/suspend integration. Signal-handler unit tests are not
+proof of all-session lock coverage or pre-suspend ordering.
+
 ## Chrome container validation (2026-10-21)
 
 User and user/PID/network namespace probes now exit 0. The container capability

@@ -17,6 +17,77 @@ fn send_request(stream: &mut UnixStream, request: &Request) {
 }
 
 #[test]
+fn desktop_bridge_validates_versions_sequences_sizes_and_rejections() {
+    let good =
+        serde_json::json!({"version":1,"sequence":1,"snapshot":{"ok":true,"state":"locked"}});
+    for (frames, expected, emitted) in [
+        (vec![good.clone(), good.clone()], "out-of-order", 1),
+        (
+            vec![
+                serde_json::json!({"version":2,"sequence":1,"snapshot":{"ok":true,"state":"locked"}}),
+            ],
+            "unsupported",
+            0,
+        ),
+        (
+            vec![
+                serde_json::json!({"ok":false,"state":"locked","error":"another desktop client is already connected"}),
+            ],
+            "another desktop client",
+            0,
+        ),
+        (
+            vec![serde_json::json!({"padding":"x".repeat(MAX_WIRE)})],
+            "size",
+            0,
+        ),
+        (
+            vec![serde_json::json!({"version":1})],
+            "invalid desktop snapshot",
+            0,
+        ),
+    ] {
+        let directory = private_temp();
+        let path = directory.path().join("control.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, Permissions::from_mode(0o600)).unwrap();
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut size = [0; 4];
+            stream.read_exact(&mut size).unwrap();
+            let mut request = vec![0; u32::from_be_bytes(size) as usize];
+            stream.read_exact(&mut request).unwrap();
+            assert!(matches!(
+                serde_json::from_slice::<Request>(&request).unwrap(),
+                Request::Watch {
+                    version: WATCH_VERSION
+                }
+            ));
+            for frame in frames {
+                let bytes = serde_json::to_vec(&frame).unwrap();
+                stream
+                    .write_all(&(bytes.len() as u32).to_be_bytes())
+                    .unwrap();
+                // A size rejection may close before the oversized body is read.
+                let _ = stream.write_all(&bytes);
+            }
+        });
+        let mut count = 0;
+        let error = watch(&path, |_| {
+            count += 1;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(format!("{error:#}").contains(expected), "{error:#}");
+        assert_eq!(count, emitted);
+        fixture.join().unwrap();
+    }
+}
+
+#[test]
 fn private_socket_round_trip_exclusive_owner_and_cleanup() {
     let directory = private_temp();
     let path = directory.path().join("control.sock");

@@ -11,7 +11,9 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QtEndian>
+#include <csignal>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static QJsonObject pending(QString token = "internal-123",
                            int remaining = 30000) {
@@ -93,6 +95,75 @@ public:
 class DesktopTests : public QObject {
   Q_OBJECT
 private slots:
+  void nativeApprovalPreview() {
+    if (!qEnvironmentVariableIsSet("YUBIQUITY_NATIVE_TEST"))
+      QSKIP("Run tests/desktop_native.py on its private Xvfb display");
+    ApprovalDialog dialog({"not-visible", "register", "webauthn.io",
+                           "emsi-test-001", true, 30000});
+    dialog.show();
+    QTRY_VERIFY(dialog.isVisible());
+    QTest::qWait(100);
+    QVERIFY(dialog.grab().save(
+        qEnvironmentVariable("YUBIQUITY_TEST_ARTIFACTS") + "/approval.png"));
+  }
+  void childDiesWithItsParent() {
+    QProcess parent;
+    parent.start(QCoreApplication::applicationFilePath(),
+                 {"--child-parent-fixture"});
+    QVERIFY(parent.waitForStarted(2000));
+    QVERIFY(parent.waitForReadyRead(2000));
+    bool parsed = false;
+    auto pid = parent.readLine().trimmed().toLongLong(&parsed);
+    QVERIFY(parsed && pid > 1);
+    parent.kill();
+    QVERIFY(parent.waitForFinished(2000));
+    auto dead = [pid] {
+      QFile stat(QString("/proc/%1/stat").arg(pid));
+      if (!stat.open(QIODevice::ReadOnly))
+        return true;
+      auto contents = stat.readAll();
+      // An orphan can briefly remain a zombie until the container's init reaps
+      // it.
+      return contents.mid(contents.lastIndexOf(')') + 2, 1) == "Z";
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(dead(), 2000);
+  }
+  void nativePinentryAccept() {
+    if (!qEnvironmentVariableIsSet("YUBIQUITY_NATIVE_TEST"))
+      QSKIP("Run tests/desktop_native.py on its private Xvfb display");
+    Pinentry prompt;
+    QSignalSpy secret(&prompt, &Pinentry::secretReady),
+        failed(&prompt, &Pinentry::failed);
+    prompt.start(false);
+    QTRY_VERIFY_WITH_TIMEOUT(!secret.isEmpty() || !failed.isEmpty(), 15000);
+    QVERIFY2(failed.isEmpty(),
+             failed.isEmpty() ? "" : qPrintable(failed[0][0].toString()));
+    QCOMPARE(secret[0][0].toByteArray(),
+             QByteArray("disposable%test+passphrase"));
+  }
+  void nativePinentryCreate() {
+    if (!qEnvironmentVariableIsSet("YUBIQUITY_NATIVE_TEST"))
+      QSKIP("Run tests/desktop_native.py on its private Xvfb display");
+    Pinentry prompt;
+    QSignalSpy secret(&prompt, &Pinentry::secretReady),
+        failed(&prompt, &Pinentry::failed);
+    prompt.start(true);
+    QTRY_VERIFY_WITH_TIMEOUT(!secret.isEmpty() || !failed.isEmpty(), 15000);
+    QVERIFY2(failed.isEmpty(),
+             failed.isEmpty() ? "" : qPrintable(failed[0][0].toString()));
+    QCOMPARE(secret[0][0].toByteArray(),
+             QByteArray("disposable%test+passphrase"));
+  }
+  void nativePinentryCancel() {
+    if (!qEnvironmentVariableIsSet("YUBIQUITY_NATIVE_TEST"))
+      QSKIP("Run tests/desktop_native.py on its private Xvfb display");
+    Pinentry prompt;
+    QSignalSpy secret(&prompt, &Pinentry::secretReady),
+        failed(&prompt, &Pinentry::failed);
+    prompt.start(false);
+    QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 15000);
+    QVERIFY(secret.isEmpty());
+  }
   void plainTextAndInvisibleControls() {
     QCOMPARE(displayText("a\nb"), QString("a\\u000ab"));
     QCOMPARE(displayText(QString::fromUtf8("abc\xe2\x80\xae")),
@@ -261,5 +332,23 @@ private slots:
   }
 };
 
-QTEST_MAIN(DesktopTests)
+int main(int argc, char **argv) {
+  if (argc == 2 && QByteArray(argv[1]) == "--child-parent-fixture") {
+    QCoreApplication app(argc, argv);
+    QProcess child;
+    protectChild(child);
+    child.start("/usr/bin/sleep", {"30"});
+    if (!child.waitForStarted(2000))
+      return 1;
+    printf("%lld\n", static_cast<long long>(child.processId()));
+    fflush(stdout);
+    return app.exec();
+  }
+  QApplication app(argc, argv);
+  QTemporaryDir settings;
+  QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope,
+                     settings.path());
+  DesktopTests tests;
+  return QTest::qExec(&tests, argc, argv);
+}
 #include "tests.moc"

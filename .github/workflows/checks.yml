@@ -20,6 +20,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends python3-fido2 python3-cryptography python3-argon2 python3-nacl python3-gi gir1.2-umockdev-1.0 umockdev udev docker-compose-v2
           sudo apt-get install -y --no-install-recommends cmake qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins qt6-wayland pinentry-qt desktop-file-utils
+          sudo apt-get install -y --no-install-recommends xvfb xdotool python3-pil dbus-daemon
           rustup show active-toolchain
       - name: Format, lint and test
         run: |
@@ -33,6 +34,7 @@ jobs:
           cmake -S desktop -B target/desktop -DCMAKE_BUILD_TYPE=Debug
           cmake --build target/desktop -j2
           YUBIQUITY_TEST_BACKEND="$PWD/target/debug/yubiquity" ctest --test-dir target/desktop --output-on-failure
+          /usr/bin/python3 tests/desktop_native.py
           desktop-file-validate desktop/org.yubiquity.Desktop.desktop
           /usr/bin/python3 tests/startup.py
           /usr/bin/python3 tests/vault_integration.py VaultTests.test_group_writable_user_ancestors_support_cli_init_and_list

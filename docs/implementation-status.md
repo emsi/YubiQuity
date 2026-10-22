@@ -8,6 +8,28 @@ is used as a substitute for the full acceptance work.
 
 ## Current scope (2026-10-22)
 
+Desktop follow-up is now partially implemented: a Qt 6 Widgets client uses
+`pinentry-qt` for vault secrets and native request-bound approval dialogs. The
+Rust client remains the sole Unix-socket/framing implementation. Versioned live
+snapshots carry remaining deadlines; loss of the desktop lease locks the daemon.
+The UI has existing/new vault selection, remembered path only, status, tray,
+Lock/quit, single-instance activation, and screen-lock/sleep signal handling.
+The foreground token-based CLI is deliberately unchanged in this increment.
+
+Offline validation passes: 72 Rust tests, strict Rust/C++ builds, seven CLI
+startup checks, Qt widget/controller tests using the real Rust bridge and
+encrypted-vault code, real pinentry unlock/create/cancel windows on private
+Xvfb, and actual desktop-entry-point single-instance/SIGKILL-watch cleanup tests.
+See [desktop evidence](test-report.md#desktop-ux-increment-2026-10-22).
+Real-device GUI/browser acceptance is **paused**, not passed: `/dev/uhid` is
+currently `root:root 0600`, inaccessible to the normal container user (UID 1000).
+The user will restore access; the agent has not changed that host-bound node.
+
+Remaining desktop work: validate GUI registration/login/denial/cancellation and
+crash/recovery through actual UHID, then finish one-time installation/PIN setup
+polish. Full new-vault creation-to-browser flow and host KDE/Wayland focus/tray/
+session-lock/suspend behavior are not yet established. No host access is requested.
+
 User-run host follow-up: Firefox Snap 154.0 (revision 8763), snapd
 `2.77.1+ubuntu24.04`, Ubuntu 24.04. The user reported working webauthn.io
 registration after adding the scoped `snap_firefox_firefox` device-tag rule.
@@ -26,8 +48,8 @@ validation, actionable errors, bounded helper lifecycle, secret-free preflight,
 startup tests and real udev-matcher fixtures cover the previously missed paths;
 the integration harness can explicitly run without the container helper.
 See [remediation evidence](test-report.md#native-startup-remediation-2026-10-21).
-The desktop application/installer workflow in plan §6.1 is proposed, not
-implemented; a better CLI is not a completed desktop UX. Native host evidence is
+The desktop workflow in plan §6.1 is partially implemented as recorded above;
+installation/PIN setup and real-device GUI acceptance remain unfinished. Native host evidence is
 limited to the user-run test above; no agent host session was accessed.
 
 The user excluded agent host access and subsequently recreated the container

@@ -186,9 +186,10 @@ to change browsers or weaken vault/device permissions. Implemented corrections:
   actual udev matcher against isolated synthetic devices, and support an
   explicitly helper-free mode in the existing device/browser harnesses.
 
-These improve the CLI but do not constitute a finished desktop UX. The next
-product slice should deliver the following coherent workflow, rather than more
-shell recipes. It is proposed here, **not implemented or runtime-validated**:
+These improve the CLI but do not constitute a finished desktop UX. The desktop
+product slice targets the workflow below. As of 2026-10-22 the Qt approval/unlock
+client and offline tests are implemented; the complete workflow is **not yet
+runtime-validated**. See §6.2 for the current implementation and remaining gates.
 
 1. **One-time host installation:** one idempotent installer/package for the
    executable, scoped udev policy and optional user unit/desktop entry. Show
@@ -224,6 +225,48 @@ vaults, canceled unlock, concurrent/stale dialogs, browser cancellation, app
 restart, no graphical session, and actual systemd-user execution. None requires
 changing Firefox or Chrome. Native host runtime confirmation remains a separate
 gate; agent host access is still not authorized.
+
+### 6.2 Desktop implementation boundary (2026-10-22)
+
+- Use **Qt 6 Widgets** for native status/tray/confirmation windows and
+  **pinentry-qt** over its Assuan stdin/stdout interface for the vault passphrase.
+  No polkit prompt for passkey approval: there is no privileged action here.
+  No password cache, system keyring integration or browser modification.
+- Keep the desktop thin. It starts the existing locked Rust service and invokes
+  the Rust control client; socket permission/peer validation and framing stay in
+  Rust. Secret commands receive bytes over an inherited pipe descriptor, never
+  argv/environment. No second CTAP, vault, crypto or socket-security implementation.
+- A version-1 watch stream contains monotonically sequenced **current snapshots**,
+  not a durable event log. Send changes and one-second heartbeats, coalesce slow
+  output, bound frame/connection resources, and permit one desktop watcher.
+  Watch loss locks the service. Linux parent-death signals terminate owned
+  processes on GUI crash; a single-instance D-Bus entry activates the existing UI.
+- Bind each dialog to one opaque internal token and a non-renewable daemon
+  deadline. Show operation, RP ID and available account as plain text. Do not
+  claim to know a full URL, initiating browser, or account not provided by CTAP.
+  Cancel is the default; expiry/cancellation/lock/disconnect removes the dialog.
+  Unknown operation/protocol versions fail closed, not generic approval.
+- Remember only vault selection. Start locked. Treat a missing saved vault as
+  an error; creating a new vault is explicit and cannot overwrite an existing
+  file. Browser PIN verification remains separate from vault unlock and UP.
+- Watch existing desktop screen-lock signals and login1 sleep notifications;
+  display monitoring limitations. Do not claim universal desktop coverage or
+  guaranteed key clearing before suspend without actual integration evidence.
+- Validate widgets, IPC, stale requests, secret-prompt cancellation and crash
+  lifecycle without UHID first; then run real Firefox/Chrome ceremonies with the
+  GUI, including denial/cancellation/recovery. Only afterward finish and validate
+  installation/PIN setup polish and user-run KDE/Wayland acceptance.
+
+Implementation/evidence: [README](README.md#desktop-interface-new-device-validation-pending)
+and [test report](docs/test-report.md#desktop-ux-increment-2026-10-22).
+The real-device gate is currently paused pending container-user UHID permissions.
+The foreground token-based CLI remains available unchanged; simplifying its
+interactive input is a separate follow-up, not a reason to weaken request binding.
+
+Upstream interfaces used: [Qt Widgets](https://doc.qt.io/qt-6/qtwidgets-index.html),
+[pinentry Assuan protocol](https://github.com/gpg/pinentry/blob/master/doc/pinentry.texi),
+[KDE screen-lock interface](https://github.com/KDE/kscreenlocker/blob/master/interface.cpp),
+and [login1 notifications](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.login1.html).
 
 ## 7. Proposed repository layout
 

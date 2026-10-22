@@ -114,6 +114,9 @@ decisions, cancellation/disconnect, deadlines and encrypted-vault FD input:
 cargo build --locked
 YUBIQUITY_TEST_BACKEND="$PWD/target/debug/yubiquity" \
     ctest --test-dir target/desktop --output-on-failure
+# Actual secret-prompt windows and app lifecycle, on a private test display:
+# requires xvfb, xdotool, python3-pil and dbus-daemon
+/usr/bin/python3 tests/desktop_native.py
 ```
 
 These checks do not yet establish real UHID/browser GUI interoperability. The
