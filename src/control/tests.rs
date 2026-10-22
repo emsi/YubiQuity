@@ -171,3 +171,123 @@ fn delayed_attachment_reply_gets_a_fresh_bounded_flush_window() {
     let response: Response = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(response.error.as_deref(), Some("device attachment failed"));
 }
+
+fn receive_json(stream: &mut UnixStream) -> serde_json::Value {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let mut length = [0; 4];
+    stream.read_exact(&mut length).unwrap();
+    let mut bytes = vec![0; u32::from_be_bytes(length) as usize];
+    stream.read_exact(&mut bytes).unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[test]
+fn desktop_watch_is_versioned_exclusive_and_latches_disconnect() {
+    let directory = private_temp();
+    let path = directory.path().join("control.sock");
+    let mut server = Server::bind(&path).unwrap();
+    let mut first = connect(&path).unwrap();
+    send_request(
+        &mut first,
+        &Request::Watch {
+            version: WATCH_VERSION,
+        },
+    );
+    let (owner, _) = server.poll().unwrap().unwrap();
+    server
+        .watch(owner, WATCH_VERSION, Response::locked())
+        .unwrap();
+    server.poll().unwrap();
+    assert_eq!(
+        receive_json(&mut first),
+        serde_json::json!({
+            "version": 1, "sequence": 1, "snapshot": {"ok": true, "state": "locked"}
+        })
+    );
+    // Idle live subscriptions outlive the ordinary five-second request limit.
+    server.clients[0].accepted -= CLIENT_LIFETIME * 2;
+    server.poll().unwrap();
+    assert_eq!(server.watcher, Some(owner));
+    let mut second = connect(&path).unwrap();
+    send_request(
+        &mut second,
+        &Request::Watch {
+            version: WATCH_VERSION,
+        },
+    );
+    let (id, _) = server.poll().unwrap().unwrap();
+    server.watch(id, WATCH_VERSION, Response::locked()).unwrap();
+    server.poll().unwrap();
+    assert_eq!(receive_json(&mut second)["ok"], false);
+    drop(first);
+    server.poll().unwrap();
+    assert_eq!(server.take_watcher_loss(), Some(owner));
+    assert_eq!(server.take_watcher_loss(), None);
+}
+
+#[test]
+fn watch_rejects_version_mismatch_and_extra_input() {
+    let directory = private_temp();
+    let path = directory.path().join("control.sock");
+    let mut server = Server::bind(&path).unwrap();
+    let mut client = connect(&path).unwrap();
+    send_request(&mut client, &Request::Watch { version: 999 });
+    let (id, _) = server.poll().unwrap().unwrap();
+    server.watch(id, 999, Response::locked()).unwrap();
+    server.poll().unwrap();
+    assert_eq!(receive_json(&mut client)["ok"], false);
+    assert!(server.watcher.is_none());
+    let mut client = connect(&path).unwrap();
+    send_request(
+        &mut client,
+        &Request::Watch {
+            version: WATCH_VERSION,
+        },
+    );
+    let (id, _) = server.poll().unwrap().unwrap();
+    server.watch(id, WATCH_VERSION, Response::locked()).unwrap();
+    server.poll().unwrap();
+    receive_json(&mut client);
+    client.write_all(b"extra request").unwrap();
+    server.poll().unwrap();
+    assert_eq!(server.take_watcher_loss(), Some(id));
+}
+
+#[test]
+fn watch_snapshots_are_bounded_coalesced_and_expiring() {
+    let directory = private_temp();
+    let path = directory.path().join("control.sock");
+    let mut server = Server::bind(&path).unwrap();
+    let mut client = connect(&path).unwrap();
+    send_request(
+        &mut client,
+        &Request::Watch {
+            version: WATCH_VERSION,
+        },
+    );
+    let (id, _) = server.poll().unwrap().unwrap();
+    server.watch(id, WATCH_VERSION, Response::locked()).unwrap();
+    // Updating cannot overwrite a partially flushed frame or grow a queue.
+    let first = server.clients[0].outgoing.clone().unwrap();
+    for _ in 0..100 {
+        server.publish(Response::ready(None)).unwrap();
+    }
+    assert_eq!(server.clients[0].outgoing.as_ref(), Some(&first));
+    server.poll().unwrap();
+    receive_json(&mut client);
+    server.publish(Response::ready(None)).unwrap();
+    server.poll().unwrap();
+    let next = receive_json(&mut client);
+    assert_eq!(next["sequence"], 2);
+    assert_eq!(next["snapshot"]["state"], "ready");
+    server.publish(Response::ready(None)).unwrap();
+    assert!(server.clients[0].outgoing.is_none());
+    server.last_publish -= Duration::from_secs(2);
+    server.publish(Response::ready(None)).unwrap();
+    assert!(server.clients[0].outgoing.is_some());
+    server.clients[0].accepted -= CLIENT_LIFETIME;
+    server.poll().unwrap();
+    assert_eq!(server.take_watcher_loss(), Some(id));
+}

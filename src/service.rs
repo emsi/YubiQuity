@@ -43,6 +43,7 @@ enum WorkEvent {
         transaction: Transaction,
         prompt: Prompt,
         decision: SyncSender<bool>,
+        deadline: Instant,
     },
     Processing(Transaction),
     Completed {
@@ -72,19 +73,20 @@ impl RequestContext for ContextImpl {
             return Err(Status::Cancelled);
         }
         let (send, receive) = mpsc::sync_channel(1);
+        let deadline = Instant::now() + Duration::from_secs(30);
         self.events
             .send(WorkEvent::Prompt {
                 transaction: self.transaction,
                 prompt,
                 decision: send,
+                deadline,
             })
             .map_err(|_| Status::Cancelled)?;
-        let start = Instant::now();
         let approved = loop {
             if self.cancelled() {
                 return Err(Status::Cancelled);
             }
-            if start.elapsed() >= Duration::from_secs(30) {
+            if Instant::now() >= deadline {
                 return Err(Status::UserActionTimeout);
             }
             match receive.recv_timeout(Duration::from_millis(20)) {
@@ -95,6 +97,9 @@ impl RequestContext for ContextImpl {
         };
         if self.cancelled() {
             return Err(Status::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(Status::UserActionTimeout);
         }
         self.events
             .send(WorkEvent::Processing(self.transaction))
@@ -243,6 +248,22 @@ struct Approval {
     token: String,
     decision: SyncSender<bool>,
     prompt: Prompt,
+    deadline: Instant,
+}
+
+fn snapshot(approval: Option<&Approval>) -> Response {
+    Response::ready(approval.filter(|a| Instant::now() < a.deadline).map(|a| {
+        control::Pending {
+            token: a.token.clone(),
+            operation: a.prompt.operation.into(),
+            rp_id: a.prompt.rp_id.clone(),
+            account: a.prompt.account.clone(),
+            remaining_ms: a
+                .deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis() as u64,
+        }
+    }))
 }
 
 pub fn run<S: Store + 'static>(
@@ -268,8 +289,11 @@ pub fn serve(
     let mut server = control::Server::bind(socket)?;
     eprintln!("Control service listening, locked. Unlock through the local client to attach.");
     while !shutdown.load(Ordering::Acquire) {
+        server.publish(Response::locked())?;
         if let Some((id, request)) = server.poll()? {
+            server.take_watcher_loss(); // Already locked; no keys/device remain.
             match &request {
+                Request::Watch { version } => server.watch(id, *version, Response::locked())?,
                 Request::Status {} | Request::Lock {} => server.respond(id, Response::locked())?,
                 Request::Unlock { passphrase } => {
                     match crate::vault::Vault::open(vault, passphrase) {
@@ -308,6 +332,7 @@ pub fn serve(
                 }
             }
         }
+        server.take_watcher_loss();
         std::thread::sleep(Duration::from_millis(20));
     }
     Ok(())
@@ -403,6 +428,7 @@ fn run_inner<S: Store + 'static>(
                     transaction,
                     prompt,
                     decision,
+                    deadline,
                 } => {
                     if !active
                         .as_ref()
@@ -437,6 +463,7 @@ fn run_inner<S: Store + 'static>(
                                 token,
                                 decision,
                                 prompt,
+                                deadline,
                             });
                         }
                     }
@@ -475,21 +502,24 @@ fn run_inner<S: Store + 'static>(
         }
 
         if let Some((server, _)) = &mut control {
+            server.publish(snapshot(approval.as_ref()))?;
             // Finite control work per HID iteration. A partial/slow client is
             // polled nonblocking and cannot monopolize report I/O/keepalives.
             for _ in 0..8 {
-                let Some((id, request)) = server.poll()? else {
+                let request = server.poll()?;
+                if let Some(id) = server.take_watcher_loss() {
+                    lock_requested = Some(id);
+                    break;
+                }
+                let Some((id, request)) = request else {
                     break;
                 };
                 let response = match &request {
-                    Request::Status {} => {
-                        Response::ready(approval.as_ref().map(|pending| control::Pending {
-                            token: pending.token.clone(),
-                            operation: pending.prompt.operation.into(),
-                            rp_id: pending.prompt.rp_id.clone(),
-                            account: pending.prompt.account.clone(),
-                        }))
+                    Request::Watch { version } => {
+                        server.watch(id, *version, snapshot(approval.as_ref()))?;
+                        continue;
                     }
+                    Request::Status {} => snapshot(approval.as_ref()),
                     Request::Unlock { .. } => {
                         Response::ready(None).error("vault is already unlocked")
                     }
@@ -499,10 +529,9 @@ fn run_inner<S: Store + 'static>(
                         break;
                     }
                     Request::Approve { token } | Request::Deny { token } => {
-                        if approval
-                            .as_ref()
-                            .is_some_and(|pending| pending.token == *token)
-                        {
+                        if approval.as_ref().is_some_and(|pending| {
+                            pending.token == *token && Instant::now() < pending.deadline
+                        }) {
                             let pending = approval.take().unwrap();
                             if pending
                                 .decision
@@ -539,7 +568,9 @@ fn run_inner<S: Store + 'static>(
                         match parts.as_slice() {
                             ["quit" | "lock"] => shutdown.store(true, Ordering::Release),
                             [action @ ("approve" | "deny"), token] => {
-                                if approval.as_ref().is_some_and(|a| a.token == *token) {
+                                if approval.as_ref().is_some_and(|a| {
+                                    a.token == *token && Instant::now() < a.deadline
+                                }) {
                                     let pending = approval.take().unwrap();
                                     let _ = pending.decision.send(*action == "approve");
                                 } else {
@@ -572,6 +603,27 @@ mod tests {
     use crate::hid;
     use crate::store::MemoryStore;
     use ciborium::Value;
+
+    #[test]
+    fn desktop_snapshot_never_renews_or_exposes_expired_approval() {
+        let (decision, _receive) = mpsc::sync_channel(1);
+        let mut approval = Approval {
+            transaction: Transaction { channel: 1, id: 1 },
+            token: "internal-request-token".into(),
+            decision,
+            prompt: Prompt {
+                operation: "register",
+                rp_id: "example.test".into(),
+                account: None,
+            },
+            deadline: Instant::now() + Duration::from_millis(500),
+        };
+        let first = snapshot(Some(&approval)).pending.unwrap();
+        assert!(first.remaining_ms <= 500);
+        assert!(snapshot(Some(&approval)).pending.unwrap().remaining_ms <= first.remaining_ms);
+        approval.deadline = Instant::now();
+        assert!(snapshot(Some(&approval)).pending.is_none());
+    }
 
     #[test]
     fn attachment_detaches_before_joining_worker_on_success_and_error() {

@@ -1,5 +1,7 @@
 //! Private, same-UID local control channel. No TCP, key export, or automatic
-//! approval. One bounded length-prefixed JSON request per connection.
+//! approval. Bounded length-prefixed JSON; ordinary clients are one-shot.
+//! One optional desktop watcher owns a live connection, not signing authority.
+//! Losing it tells the service to lock. Snapshots never queue without bound.
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, Metadata, Permissions};
@@ -16,6 +18,7 @@ const MAX_WIRE: usize = 8192;
 const MAX_CLIENTS: usize = 8;
 const CLIENT_LIFETIME: Duration = Duration::from_secs(5);
 pub type RequestId = u64;
+pub const WATCH_VERSION: u32 = 1;
 
 // Intentionally no Debug: unlock requests contain passphrase bytes.
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -26,6 +29,7 @@ pub enum Request {
     Approve { token: String },
     Deny { token: String },
     Lock {},
+    Watch { version: u32 },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -35,9 +39,12 @@ pub struct Pending {
     pub operation: String,
     pub rp_id: String,
     pub account: Option<String>,
+    /// Remaining daemon-side presence lifetime, not renewed by watching.
+    #[serde(default)]
+    pub remaining_ms: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Response {
     pub ok: bool,
@@ -210,10 +217,21 @@ struct Client {
     outgoing: Option<Vec<u8>>,
     sent: usize,
     accepted: Instant,
+    watching: bool,
 }
 
 impl Client {
     fn read_request(&mut self) -> io::Result<Option<Request>> {
+        if self.watching {
+            // A watcher sends exactly one subscription. EOF, extra data, and
+            // malformed clients all revoke the desktop lease.
+            let mut byte = [0u8];
+            match self.stream.read(&mut byte) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => return Ok(None),
+                _ => return Err(io::ErrorKind::UnexpectedEof.into()),
+            }
+        }
         if self.handled {
             return Ok(None);
         }
@@ -255,7 +273,13 @@ impl Client {
             Ok(0) => false,
             Ok(count) => {
                 self.sent += count;
-                self.sent < output.len()
+                if self.sent == output.len() && self.watching {
+                    self.outgoing = None;
+                    self.sent = 0;
+                    true
+                } else {
+                    self.sent < output.len()
+                }
             }
             Err(error) => matches!(
                 error.kind(),
@@ -271,6 +295,11 @@ pub struct Server {
     _lock: File,
     clients: Vec<Client>,
     next_id: RequestId,
+    watcher: Option<RequestId>,
+    watcher_lost: Option<RequestId>,
+    last_snapshot: Vec<u8>,
+    last_publish: Instant,
+    watch_sequence: u64,
 }
 
 impl Server {
@@ -307,12 +336,21 @@ impl Server {
             _lock: lock,
             clients: Vec::new(),
             next_id: 0,
+            watcher: None,
+            watcher_lost: None,
+            last_snapshot: Vec::new(),
+            last_publish: Instant::now(),
+            watch_sequence: 0,
         })
     }
 
     pub fn poll(&mut self) -> Result<Option<(RequestId, Request)>> {
-        self.clients
-            .retain_mut(|client| client.accepted.elapsed() < CLIENT_LIFETIME && client.flush());
+        self.clients.retain_mut(|client| {
+            (client.watching && client.outgoing.is_none()
+                || client.accepted.elapsed() < CLIENT_LIFETIME)
+                && client.flush()
+        });
+        self.check_watcher();
         for _ in 0..MAX_CLIENTS {
             match self.listener.accept() {
                 Ok((stream, _)) => {
@@ -333,6 +371,7 @@ impl Server {
                         outgoing: None,
                         sent: 0,
                         accepted: Instant::now(),
+                        watching: false,
                     });
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
@@ -347,6 +386,7 @@ impl Server {
                 Ok(None) => index += 1,
                 Err(_) => {
                     self.clients.swap_remove(index);
+                    self.check_watcher();
                 }
             }
         }
@@ -354,8 +394,12 @@ impl Server {
     }
 
     pub fn respond(&mut self, id: RequestId, response: Response) -> Result<()> {
+        self.send(id, &response)
+    }
+
+    fn send(&mut self, id: RequestId, response: &impl Serialize) -> Result<()> {
         if let Some(client) = self.clients.iter_mut().find(|client| client.id == id) {
-            let bytes = serde_json::to_vec(&response)?;
+            let bytes = serde_json::to_vec(response)?;
             if bytes.len() > MAX_WIRE {
                 bail!("internal control response exceeds bound");
             }
@@ -363,11 +407,83 @@ impl Server {
             framed.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
             framed.extend(bytes);
             client.outgoing = Some(framed);
+            client.sent = 0;
             // Expensive unlock/attachment work is synchronous and bounded by
             // its own stages. Give its reply a fresh flush window, rather than
             // discarding it because the request arrived >5 seconds ago.
             client.accepted = Instant::now();
         }
+        Ok(())
+    }
+
+    fn check_watcher(&mut self) {
+        if self
+            .watcher
+            .is_some_and(|id| !self.clients.iter().any(|c| c.id == id))
+        {
+            self.watcher_lost = self.watcher.take();
+            self.last_snapshot.clear();
+        }
+    }
+
+    /// Loss is latched until the service has processed it (detach while ready).
+    pub fn take_watcher_loss(&mut self) -> Option<RequestId> {
+        self.watcher_lost.take()
+    }
+
+    pub fn watch(&mut self, id: RequestId, version: u32, state: Response) -> Result<()> {
+        if version != WATCH_VERSION {
+            return self.respond(id, state.error("unsupported desktop protocol version"));
+        }
+        if self.watcher.is_some() || self.watcher_lost.is_some() {
+            return self.respond(
+                id,
+                state.error("another desktop client is already connected"),
+            );
+        }
+        if let Some(client) = self.clients.iter_mut().find(|c| c.id == id) {
+            client.watching = true;
+            self.watcher = Some(id);
+            self.last_snapshot.clear();
+            self.watch_sequence = 0;
+            self.publish(state)?;
+        }
+        Ok(())
+    }
+
+    /// Publish changes immediately and a heartbeat every second. A stalled
+    /// subscriber retains at most one bounded frame and expires after 5 seconds.
+    pub fn publish(&mut self, state: Response) -> Result<()> {
+        let Some(id) = self.watcher else {
+            return Ok(());
+        };
+        let mut key = state.clone();
+        if let Some(pending) = &mut key.pending {
+            pending.remaining_ms = 0;
+        }
+        let key = serde_json::to_vec(&key)?;
+        if key == self.last_snapshot && self.last_publish.elapsed() < Duration::from_secs(1) {
+            return Ok(());
+        }
+        if self
+            .clients
+            .iter()
+            .any(|c| c.id == id && c.outgoing.is_some())
+        {
+            return Ok(());
+        }
+        self.watch_sequence = self
+            .watch_sequence
+            .checked_add(1)
+            .context("desktop sequence exhausted")?;
+        self.send(
+            id,
+            &serde_json::json!({
+                "version": WATCH_VERSION, "sequence": self.watch_sequence, "snapshot": state
+            }),
+        )?;
+        self.last_snapshot = key;
+        self.last_publish = Instant::now();
         Ok(())
     }
 }
