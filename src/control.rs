@@ -55,6 +55,14 @@ pub struct Response {
     pub pending: Option<Pending>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WatchEvent {
+    pub version: u32,
+    pub sequence: u64,
+    pub snapshot: Response,
+}
+
 impl Response {
     pub fn locked() -> Self {
         Self {
@@ -478,9 +486,11 @@ impl Server {
             .context("desktop sequence exhausted")?;
         self.send(
             id,
-            &serde_json::json!({
-                "version": WATCH_VERSION, "sequence": self.watch_sequence, "snapshot": state
-            }),
+            &WatchEvent {
+                version: WATCH_VERSION,
+                sequence: self.watch_sequence,
+                snapshot: state,
+            },
         )?;
         self.last_snapshot = key;
         self.last_publish = Instant::now();
@@ -520,6 +530,49 @@ pub fn call(path: &Path, request: &Request) -> Result<Response> {
     let mut response = vec![0u8; length];
     stream.read_exact(&mut response)?;
     serde_json::from_slice(&response).context("invalid control response")
+}
+
+/// Desktop bridge: keep socket authentication and framing in this client rather
+/// than reimplementing them in each UI. The callback must not queue unboundedly.
+pub fn watch(path: &Path, mut emit: impl FnMut(WatchEvent) -> Result<()>) -> Result<()> {
+    let (path, _) = private_path(path)?;
+    socket_metadata(&path.alias)?;
+    let mut stream = connect(&path.alias).context("connect local control service")?;
+    same_user(&stream)?;
+    // Includes time for synchronous KDF and device attachment during unlock.
+    stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+    stream.set_write_timeout(Some(CLIENT_LIFETIME))?;
+    let request = serde_json::to_vec(&Request::Watch {
+        version: WATCH_VERSION,
+    })?;
+    stream.write_all(&(request.len() as u32).to_be_bytes())?;
+    stream.write_all(&request)?;
+    let mut previous = 0;
+    loop {
+        let mut length = [0u8; 4];
+        stream
+            .read_exact(&mut length)
+            .context("desktop connection lost or timed out")?;
+        let length = u32::from_be_bytes(length) as usize;
+        if length == 0 || length > MAX_WIRE {
+            bail!("invalid desktop snapshot size");
+        }
+        let mut bytes = vec![0u8; length];
+        stream.read_exact(&mut bytes)?;
+        if let Ok(rejection) = serde_json::from_slice::<Response>(&bytes) {
+            bail!(
+                "desktop subscription rejected: {}",
+                rejection.error.unwrap_or_default()
+            );
+        }
+        let event: WatchEvent =
+            serde_json::from_slice(&bytes).context("invalid desktop snapshot")?;
+        if event.version != WATCH_VERSION || event.sequence <= previous {
+            bail!("unsupported or out-of-order desktop snapshot");
+        }
+        previous = event.sequence;
+        emit(event)?;
+    }
 }
 
 #[cfg(test)]

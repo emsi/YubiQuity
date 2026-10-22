@@ -67,6 +67,63 @@ or trusted manufacturer attestation.
 
 ## Build and check
 
+### Desktop interface (new, device validation pending)
+
+The optional Qt 6 desktop application replaces typed approval tokens with a
+native **Approve / Cancel** dialog showing the operation, site (RP ID), and
+available account. Browser security-key PIN prompts remain unchanged. Vault
+passphrases use `pinentry-qt`; they are not stored in settings or passed in
+command-line arguments. Settings remember only the selected vault path.
+
+```bash
+# Ubuntu 24.04 / compatible Debian systems, inside the environment being built:
+sudo apt-get install cmake qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins qt6-wayland pinentry-qt
+cargo build --release --locked
+cmake -S desktop -B target/desktop -DCMAKE_BUILD_TYPE=Release
+cmake --build target/desktop -j2
+target/desktop/yubiquity-desktop --backend "$PWD/target/release/yubiquity" \
+    --vault "$HOME/.local/share/yubiquity/host-test/credentials.yq"
+```
+
+Stop any existing foreground daemon using that vault first. Launch as your normal
+desktop user, never with `sudo`. The app owns a locked service, offers Unlock,
+and attaches the key only after unlock. Open/create another vault from the main
+window. Closing the main window keeps it in the tray when a tray is available;
+**Lock and quit** always exits. Without a tray, closing locks and exits. No
+autostart or password caching is enabled. Device permissions and Firefox Snap
+requirements in the host guide still apply; the GUI does not change them.
+
+The request token remains internal. Cancel/Escape/window close denies that exact
+request; expiry, browser cancellation and disconnect remove the dialog. Enter
+defaults to Cancel. A lost desktop watch connection locks the service, and owned
+child processes die with the app. Screen-lock signals from supported KDE/GNOME
+interfaces and login1 sleep notifications trigger locking; unavailable monitoring
+is reported. Actual KDE/Wayland focus, tray and suspend behavior still need host
+validation. No claim of universal session-lock coverage is made.
+
+For an existing `serve` instance, use `--socket /absolute/private/control.sock`
+instead of `--vault`. Only one desktop watcher is allowed. Advanced container
+tests may explicitly pass `--node-helper scripts/container-hidraw.py`; native
+hosts must not need that option. The Rust `control watch` command provides
+bounded version-1 JSON snapshots; this is the desktop bridge, not a key-export API.
+
+Offline GUI tests exercise real Qt widgets, the Rust socket client, exact-token
+decisions, cancellation/disconnect, deadlines and encrypted-vault FD input:
+
+```bash
+cargo build --locked
+YUBIQUITY_TEST_BACKEND="$PWD/target/debug/yubiquity" \
+    ctest --test-dir target/desktop --output-on-failure
+```
+
+These checks do not yet establish real UHID/browser GUI interoperability. The
+container currently needs its normal user's `/dev/uhid` access restored before
+that acceptance gate. Same-user/root compromise can bypass or spoof a software
+approval UI. Qt input/IPC can make transient secret copies: best-effort clearing
+and disabled core dumps are not hardware isolation or a locked-memory guarantee.
+
+### Core command-line build
+
 ```bash
 bash scripts/install-dev-tools.sh
 cargo build --locked

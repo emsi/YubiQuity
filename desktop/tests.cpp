@@ -1,0 +1,265 @@
+#include "process.h"
+#include "ui.h"
+#include "window.h"
+#include <QDialogButtonBox>
+#include <QFile>
+#include <QJsonDocument>
+#include <QLabel>
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QSignalSpy>
+#include <QTemporaryDir>
+#include <QTest>
+#include <QtEndian>
+#include <sys/stat.h>
+
+static QJsonObject pending(QString token = "internal-123",
+                           int remaining = 30000) {
+  return {{"token", token},
+          {"operation", "register"},
+          {"rp_id", "example.test"},
+          {"account", "alice"},
+          {"remaining_ms", remaining}};
+}
+static QJsonObject snapshotEvent(int sequence, QJsonObject request = {}) {
+  QJsonObject state{{"ok", true}, {"state", "ready"}};
+  if (!request.isEmpty())
+    state.insert("pending", request);
+  return {{"version", 1}, {"sequence", sequence}, {"snapshot", state}};
+}
+
+// Test-only socket fixture, never a production authenticator or approval mode.
+// Exercises the real Rust bridge, same-UID checks, framing and Qt controller.
+class FakeService : public QObject {
+public:
+  QTemporaryDir dir;
+  QLocalServer listener;
+  QPointer<QLocalSocket> watcher;
+  QList<QJsonObject> commands;
+  int sequence = 0;
+  QJsonObject request = pending();
+  bool locked = false;
+  FakeService() {
+    chmod(QFile::encodeName(dir.path()).constData(), 0700);
+    listener.setSocketOptions(QLocalServer::UserAccessOption);
+    if (!listener.listen(path()))
+      qFatal("test socket could not listen");
+    chmod(QFile::encodeName(path()).constData(), 0600);
+    connect(&listener, &QLocalServer::newConnection, this, [this] {
+      auto *socket = listener.nextPendingConnection();
+      auto buffer = std::make_shared<QByteArray>();
+      connect(socket, &QLocalSocket::readyRead, this, [this, socket, buffer] {
+        *buffer += socket->readAll();
+        if (buffer->size() < 4)
+          return;
+        auto length = qFromBigEndian<quint32>(buffer->constData());
+        if (buffer->size() < 4 + length)
+          return;
+        auto command = QJsonDocument::fromJson(buffer->mid(4, length)).object();
+        buffer->clear();
+        if (command.value("command") == "watch") {
+          watcher = socket;
+          publish();
+        } else {
+          commands.append(command);
+          if (command.value("command") == "lock")
+            locked = true;
+          send(socket, {{"ok", true}, {"state", locked ? "locked" : "ready"}});
+          socket->disconnectFromServer();
+        }
+      });
+      connect(socket, &QLocalSocket::disconnected, socket,
+              &QObject::deleteLater);
+    });
+  }
+  QString path() const { return dir.path() + "/control.sock"; }
+  static void send(QLocalSocket *socket, const QJsonObject &object) {
+    auto bytes = QJsonDocument(object).toJson(QJsonDocument::Compact);
+    char size[4];
+    qToBigEndian<quint32>(quint32(bytes.size()), size);
+    socket->write(size, 4);
+    socket->write(bytes);
+    socket->flush();
+  }
+  void publish() {
+    auto data = snapshotEvent(++sequence, request);
+    if (locked)
+      data["snapshot"] = QJsonObject{{"ok", true}, {"state", "locked"}};
+    if (watcher)
+      send(watcher, data);
+  }
+};
+
+class DesktopTests : public QObject {
+  Q_OBJECT
+private slots:
+  void plainTextAndInvisibleControls() {
+    QCOMPARE(displayText("a\nb"), QString("a\\u000ab"));
+    QCOMPARE(displayText(QString::fromUtf8("abc\xe2\x80\xae")),
+             QString("abc\\u202e"));
+    ApprovalDialog dialog({"secret-token", "register", "<b>example.test</b>",
+                           "Alice", true, 1000});
+    auto *site = dialog.findChild<QLabel *>("site");
+    QCOMPARE(site->textFormat(), Qt::PlainText);
+    QCOMPARE(site->text(), QString("Site: <b>example.test</b>"));
+    for (auto *label : dialog.findChildren<QLabel *>())
+      QVERIFY(!label->text().contains("secret-token"));
+  }
+  void exactRequestSingleDecisionAndSafeDefault() {
+    ApprovalDialog dialog(
+        {"request-A", "authenticate", "example.test", {}, false, 1000});
+    QSignalSpy decisions(&dialog, &ApprovalDialog::decision);
+    auto *buttons = dialog.findChild<QDialogButtonBox *>();
+    QVERIFY(buttons->button(QDialogButtonBox::Cancel)->isDefault());
+    auto *approve = dialog.findChild<QPushButton *>("approve");
+    QVERIFY(!approve->autoDefault());
+    approve->click();
+    approve->click();
+    QCOMPARE(decisions.size(), 1);
+    QCOMPARE(decisions[0][0].toString(), QString("request-A"));
+    QCOMPARE(decisions[0][1].toBool(), true);
+  }
+  void escapeAndCloseDeny() {
+    for (bool escape : {false, true}) {
+      ApprovalDialog dialog(
+          {"request-A", "register", "example.test", {}, false, 1000});
+      QSignalSpy decisions(&dialog, &ApprovalDialog::decision);
+      dialog.show();
+      if (escape)
+        QTest::keyClick(&dialog, Qt::Key_Escape);
+      else
+        dialog.close();
+      QCOMPARE(decisions.size(), 1);
+      QCOMPARE(decisions[0][1].toBool(), false);
+    }
+  }
+  void expiryCannotBeRenewedOrClicked() {
+    ApprovalDialog dialog(
+        {"request-A", "register", "example.test", {}, false, 30});
+    QSignalSpy decisions(&dialog, &ApprovalDialog::decision),
+        expired(&dialog, &ApprovalDialog::expired);
+    dialog.shortenLifetime(30000);
+    QTRY_COMPARE_WITH_TIMEOUT(expired.size(), 1, 1000);
+    dialog.findChild<QPushButton *>("approve")->click();
+    QCOMPARE(decisions.size(), 0);
+  }
+  void resetHasExplicitDestructiveLanguage() {
+    ApprovalDialog dialog({"reset", "reset", {}, {}, false, 1000});
+    QCOMPARE(dialog.findChild<QPushButton *>("approve")->text(),
+             QString("Delete all passkeys"));
+    bool warned = false;
+    for (auto *label : dialog.findChildren<QLabel *>())
+      warned |= label->text().contains("cannot be undone");
+    QVERIFY(warned);
+  }
+  void snapshotVersionAndImmutableRequest() {
+    SnapshotModel model;
+    QString error;
+    QVERIFY(model.update(snapshotEvent(1, pending()), error));
+    QVERIFY(
+        model.update(snapshotEvent(2, pending("internal-123", 100)), error));
+    QVERIFY(!model.update(snapshotEvent(2), error));
+    auto changed = pending();
+    changed["rp_id"] = "different.test";
+    QVERIFY(!model.update(snapshotEvent(3, changed), error));
+    auto future = snapshotEvent(3);
+    future["version"] = 2;
+    QVERIFY(!model.update(future, error));
+    QVERIFY(model.update(snapshotEvent(3), error));
+    QVERIFY(model.pending.token.isEmpty());
+    auto unknown = pending();
+    unknown["operation"] = "unknown";
+    QVERIFY(!model.update(snapshotEvent(4, unknown), error));
+    auto wrongType = pending();
+    wrongType["remaining_ms"] = "123";
+    QVERIFY(!model.update(snapshotEvent(4, wrongType), error));
+  }
+  void assuanCodecAndLimits() {
+    QByteArray out;
+    QVERIFY(assuanDecode("a%25b%0Ac+%C3%A9", out));
+    QCOMPARE(out, QByteArray("a%b\nc+\xc3\xa9"));
+    QCOMPARE(assuanEscape("%\n\r"), QByteArray("%25%0A%0D"));
+    for (auto malformed : {"%", "%0", "%GG"}) {
+      out.clear();
+      QVERIFY(!assuanDecode(malformed, out));
+    }
+    out.clear();
+    QVERIFY(!assuanDecode(QByteArray(1025, 'x'), out));
+    erase(out);
+    QVERIFY(out.isEmpty());
+  }
+  void realBridgeApprovalAndCancellation() {
+    const auto backend = qEnvironmentVariable("YUBIQUITY_TEST_BACKEND");
+    QVERIFY2(!backend.isEmpty(),
+             "Set YUBIQUITY_TEST_BACKEND to the compiled Rust CLI");
+    FakeService server;
+    Window window(backend, {}, server.path(), {});
+    window.show();
+    QTRY_VERIFY(window.findChild<ApprovalDialog *>("approvalDialog"));
+    auto *first = window.findChild<ApprovalDialog *>("approvalDialog");
+    // Removal is cancellation, never approval/denial for a later request.
+    server.request = {};
+    server.publish();
+    QTRY_VERIFY(!window.findChild<ApprovalDialog *>("approvalDialog"));
+    QVERIFY(server.commands.isEmpty());
+    Q_UNUSED(first);
+    server.request = pending("request-B");
+    server.publish();
+    QTRY_VERIFY(window.findChild<ApprovalDialog *>("approvalDialog"));
+    window.findChild<ApprovalDialog *>()
+        ->findChild<QPushButton *>("approve")
+        ->click();
+    QTRY_COMPARE(server.commands.size(), 1);
+    QCOMPARE(server.commands[0].value("command").toString(),
+             QString("approve"));
+    QCOMPARE(server.commands[0].value("token").toString(),
+             QString("request-B"));
+    server.publish();
+    QTest::qWait(50);
+    QVERIFY(!window.findChild<ApprovalDialog *>("approvalDialog"));
+    server.request = pending("request-C");
+    server.publish();
+    QTRY_VERIFY(window.findChild<ApprovalDialog *>("approvalDialog"));
+    server.watcher->disconnectFromServer();
+    QTRY_VERIFY(!window.findChild<ApprovalDialog *>("approvalDialog"));
+    QCOMPARE(server.commands.size(), 1);
+    QCOMPARE(window.findChild<QLabel *>("status")->text(),
+             QString("Not connected"));
+  }
+  void screenLockDropsWatcherAndPrompt() {
+    FakeService server;
+    Window window(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"), {},
+                  server.path(), {});
+    QTRY_VERIFY(window.findChild<ApprovalDialog *>("approvalDialog"));
+    window.screenLocked(true);
+    QTRY_VERIFY(!server.watcher);
+    QTRY_VERIFY(!window.findChild<ApprovalDialog *>("approvalDialog"));
+    QVERIFY(!window.findChild<QPushButton *>("unlock")->isEnabled());
+    window.screenLocked(false);
+    QVERIFY(window.findChild<QPushButton *>("unlock")->isEnabled());
+    QVERIFY(server.commands.isEmpty());
+  }
+  void secretDescriptorUsesRealVaultCode() {
+    QTemporaryDir directory;
+    chmod(QFile::encodeName(directory.path()).constData(), 0700);
+    const auto path = directory.path() + "/credentials.yq";
+    const auto backend = qEnvironmentVariable("YUBIQUITY_TEST_BACKEND");
+    Command init;
+    QSignalSpy finished(&init, &Command::finished);
+    init.start(backend, {"init", "--vault", path, "--passphrase-fd", "198"},
+               "disposable test passphrase", true);
+    QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 10000);
+    QVERIFY2(finished[0][0].toBool(), qPrintable(finished[0][2].toString()));
+    QVERIFY(QFileInfo::exists(path));
+    Command list;
+    QSignalSpy listed(&list, &Command::finished);
+    list.start(backend, {"list", "--vault", path, "--passphrase-fd", "198"},
+               "disposable test passphrase", true);
+    QTRY_COMPARE_WITH_TIMEOUT(listed.size(), 1, 10000);
+    QVERIFY2(listed[0][0].toBool(), qPrintable(listed[0][2].toString()));
+    QVERIFY(!listed[0][1].toByteArray().contains("disposable test passphrase"));
+  }
+};
+
+QTEST_MAIN(DesktopTests)
+#include "tests.moc"

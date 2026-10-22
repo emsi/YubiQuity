@@ -127,6 +127,8 @@ enum Commands {
 enum ControlAction {
     /// Show lock state and the current request description/token, if any.
     Status,
+    /// Stream versioned JSON snapshots; disconnecting locks the service.
+    Watch,
     /// Unlock from a no-echo terminal or explicitly inherited secret descriptor.
     Unlock {
         #[arg(long, value_parser = clap::value_parser!(i32).range(3..))]
@@ -258,7 +260,18 @@ fn main() -> Result<()> {
             )?;
         }
         Commands::Control { socket, action } => {
+            if matches!(action, ControlAction::Watch) {
+                use std::io::Write;
+                let mut output = std::io::stdout().lock();
+                return control::watch(&socket, |event| {
+                    serde_json::to_writer(&mut output, &event)?;
+                    writeln!(output)?;
+                    output.flush()?;
+                    Ok(())
+                });
+            }
             let request = match action {
+                ControlAction::Watch => unreachable!(),
                 ControlAction::Status => control::Request::Status {},
                 ControlAction::Unlock { passphrase_fd } => {
                     let status = control::call(&socket, &control::Request::Status {})?;
