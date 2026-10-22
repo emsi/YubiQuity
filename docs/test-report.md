@@ -149,7 +149,8 @@ do not turn this implementation into hardware-backed or trusted-attested storage
 | Mozilla Firefox ESR 153.5.1esr, Linux x86-64 en-US archive | Same scenario set passes with the unchanged authenticator | Same namespace warning; native menu UI test adapter has inspected ESR coordinates |
 | Chrome for Testing 155.0.8059.84 | Sandbox startup, basic/resident/required-UV, native two-account selection, persistence/service, full local negative/recovery and bidirectional Firefox reuse pass | Other Chrome packages remain unverified; retry/error-sheet dismissal is part of the observed native UI flow |
 | Ordinary stable distribution Chrome/Chromium | Not validated; deferred | Chrome for Testing results do not validate other packages |
-| Snap/Flatpak browser packages | Not validated; deferred | Confined-package runtime and device access have not been tested; no host execution or confinement bypass is proposed |
+| Ubuntu Firefox Snap 154.0, revision 8763; snapd 2.77.1+ubuntu24.04 | User reported working webauthn.io registration after installing the scoped Firefox device-tag rule; see [manual host result](#snap-firefox-manual-host-smoke-test-2026-10-22) | User-run smoke test, not an agent-run or independently verified ceremony; login, persistence, hotplug and negative matrix not established for this package |
+| Other Snap/Flatpak browser packages | Not validated; deferred | The single Firefox Snap host result does not establish other confined-package support |
 
 No row implies support for arbitrary browsers or packages not tested here.
 
@@ -273,7 +274,7 @@ browser security features.
 | Other browser packages | Cross-browser reuse and two-account selection pass for the named Firefox/Chrome builds only |
 | Browser hotplug | Firefox/Chrome before/after startup, crash/restart and pending-login removal/recovery verified for the recorded builds; other deployments remain unverified |
 | Storage deployment validation | Local-filesystem/crash tests pass; not a claim of tested power-loss behavior on every filesystem/storage stack |
-| Release packaging/matrix | Unit and scoped udev rules implemented; host application, systemd-user execution, ordinary stable distribution Chrome/Chromium and confined packages remain unverified; Mozilla ESR archive scenarios pass |
+| Release packaging/matrix | Unit and scoped udev rules implemented; user-reported Ubuntu Firefox Snap registration with host rules is recorded below; host systemd-user execution, ordinary stable distribution Chrome/Chromium and other confined packages remain unverified; Mozilla ESR archive scenarios pass |
 | Broader release validation | The named public sites and selected browser matrix pass; other deployments and longer campaigns are additional coverage, and hosted CI execution has not been observed |
 
 In the pre-recreation environment, Firefox launched despite an `EPERM` warning from its user-namespace probe. That
@@ -431,6 +432,49 @@ These environment variables are test-harness settings, not production daemon
 backdoors. Actual native host hotplug, desktop group inheritance and systemd-user
 execution remain unverified; host access remains excluded. The desktop UX
 follow-up is specified in plan section 6.1 and is not yet implemented.
+
+## Snap Firefox manual host smoke test (2026-10-22)
+
+This is a **user-reported manual host result**, distinct from the automated
+container tests above. The agent did not access the host or run this ceremony.
+
+Environment supplied by the user:
+
+- Ubuntu 24.04, amd64, kernel `6.8.0-147-generic`.
+- Firefox 154.0, Application Binary
+  `/snap/firefox/8763/usr/lib/firefox/firefox` (Snap revision 8763).
+- snap/snapd `2.77.1+ubuntu24.04`.
+- Native foreground YubiQuity with an existing encrypted vault; no container
+  node helper. The host shell had the `yubiquity` group after a reboot.
+
+Observed troubleshooting sequence:
+
+1. Independent `fido2-token -L` found the device and `fido2-token -S` succeeded,
+   while browser registration waited for a touch without a daemon approval.
+2. `firefox:u2f-devices` was already connected to `:u2f-devices`. Host udev
+   reported `ID_FIDO_TOKEN=1` and `ID_SECURITY_TOKEN=1`, but neither `TAGS` nor
+   `CURRENT_TAGS` contained `snap_firefox_firefox`.
+3. The user installed `69-yubiquity-firefox-snap.rules` with the scoped rule in
+   the [host guide](host-testing.md#ubuntu-firefox-installed-as-a-snap), reloaded
+   udev and triggered a change for the current device. The supplied output then
+   included `CURRENT_TAGS=:snap_firefox_firefox:security-device:seat:`.
+4. After instructions to fully quit/reopen Firefox and retry, the daemon printed
+   an `APPROVAL ... register rp="webauthn.io"` request. An initial literal
+   `approve TOKEN` was rejected; after clarification to use the actual request
+   token, the user reported that it worked.
+
+This agrees with [snapd 2.77.1's USB-parent matching rules](https://github.com/canonical/snapd/blob/2.77.1/interfaces/builtin/u2f_devices.go#L246):
+UHID does not supply the USB parent needed to obtain the Snap device tag through
+those rules. The documented remedy adds narrowly scoped host device authorization,
+not a Firefox modification, manufacturer-ID spoof, or disabled sandbox.
+
+Evidence boundary: this records reported registration success and the supplied
+device/approval output. There are no agent-captured browser/RP artifacts or
+independent signature/UP/UV checks for this host ceremony. Allow-list and
+discoverable login, persistence, hotplug, negative/recovery cases, other sites,
+other Snap versions, and host systemd-user operation remain unverified on this
+deployment. Earlier statements that host runtime was unverified describe the
+state before this limited user-run test, not the absence of this later evidence.
 
 ## Security interpretation
 

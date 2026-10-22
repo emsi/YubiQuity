@@ -6,7 +6,19 @@ and named browsers. The audit below separates that result from explicitly
 unverified deployments; neither a transport probe nor a single happy-path test
 is used as a substitute for the full acceptance work.
 
-## Current scope (2026-10-21)
+## Current scope (2026-10-22)
+
+User-run host follow-up: Firefox Snap 154.0 (revision 8763), snapd
+`2.77.1+ubuntu24.04`, Ubuntu 24.04. The user reported working webauthn.io
+registration after adding the scoped `snap_firefox_firefox` device-tag rule.
+The interface had already been connected and ordinary FIDO CLI access worked;
+the missing Snap device authorization was separate from Unix group permissions.
+Requirements and the exact rule are in the
+[host guide](host-testing.md#ubuntu-firefox-installed-as-a-snap); the
+[evidence boundaries](test-report.md#snap-firefox-manual-host-smoke-test-2026-10-22)
+distinguish this manual registration smoke test from the automated matrix.
+No agent host access occurred. Snap login/recovery/hotplug and host systemd-user
+runtime remain unverified.
 
 Host-startup follow-up: native hidraw permission-readiness retry, exact-node
 validation, actionable errors, bounded helper lifecycle, secret-free preflight,
@@ -15,8 +27,8 @@ startup tests and real udev-matcher fixtures cover the previously missed paths;
 the integration harness can explicitly run without the container helper.
 See [remediation evidence](test-report.md#native-startup-remediation-2026-10-21).
 The desktop application/installer workflow in plan §6.1 is proposed, not
-implemented; a better CLI is not a completed desktop UX. Host runtime remains
-unverified and no host session was accessed.
+implemented; a better CLI is not a completed desktop UX. Native host evidence is
+limited to the user-run test above; no agent host session was accessed.
 
 The user excluded agent host access and subsequently recreated the container
 with the supplied seccomp policy. Namespace probes and sandboxed Chrome now work
@@ -33,8 +45,9 @@ pass ten ceremonies across webauthn.io and Yubico's technical demo in both brows
 four offline public-test safety/evidence guards also pass.
 See [current evidence](test-report.md#chrome-container-validation-2026-10-21).
 
-Other browser packages remain unverified. Host systemd/udev runtime is unverified and
-outside authorized execution scope. The authenticator code was unchanged; the
+Other browser packages remain unverified. Beyond the user-run host result above,
+host runtime is unverified and outside authorized agent execution scope.
+The authenticator code was unchanged; the
 new Chrome native UI handling is in the test harness only.
 
 Git author configuration is resolved. The implementation and follow-up tests
@@ -76,7 +89,8 @@ were committed as `e562c25` and `1ad38b7`; the working tree was clean afterward.
 - [x] Wrong passphrase/corruption/version/write-failure/competing-writer tests.
 - [x] Credentials survive restart; exact deletion and reset persist in the selected vault.
 - [x] Locked local service, same-user control client, explicit unlock/status/approval/deny/lock; unprivileged real-device and Firefox/Chrome service-path tests.
-- Deferred: host deployment of the user unit and scoped udev rules (artifacts/instructions implemented; runtime unverified; host access not authorized).
+- User-reported: native host device access and Firefox Snap registration after scoped udev tagging; not a full deployment matrix.
+- Deferred: host runtime validation of the user unit and broader device-policy/hotplug cases; agent host access is not authorized.
 
 ## End-to-end and release evidence
 
@@ -91,6 +105,7 @@ were committed as `e562c25` and `1ad38b7`; the working tree was clean afterward.
 - [x] Dedicated trusted-attestation rejection in the RP verifier and real Firefox/Chrome flows; explicitly outside supported scope.
 - [x] Completed browser/package compatibility report, distinguishing tested builds from unverified distribution/confined packages.
 - [x] Agreed public-site smoke tests with disposable accounts: both named sites in Firefox and Chrome.
+- [x] Documented user-reported Ubuntu Firefox Snap registration smoke test and its additional host device-access requirements; full Snap matrix remains unverified.
 - [x] Requirement-by-requirement completion audit; no unverified compatibility claims.
 
 ## Final acceptance audit (2026-10-21)
@@ -99,6 +114,8 @@ The following audit maps the plan to code and observed tests. Host execution
 remains excluded. Chrome results now have actual post-recreation browser/RP
 evidence; untested deployments/packages remain explicit boundaries. All required
 baseline implementation and authorized validation work is accounted for below.
+This audit is the 2026-10-21 snapshot; the limited user-run Snap host evidence
+from 2026-10-22 is recorded in Current scope above.
 
 | Plan requirement | Authoritative evidence inspected | Remaining gap |
 |---|---|---|

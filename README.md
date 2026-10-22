@@ -11,6 +11,11 @@ For a hands-on test with your own browser, follow the
 permissions, a private test vault, PIN setup, both public demo sites, persistence,
 and Firefox/Chrome credential reuse without browser modifications.
 
+**Using Ubuntu's Firefox Snap?** Follow the additional
+[Snap device-access requirements](docs/host-testing.md#ubuntu-firefox-installed-as-a-snap):
+the connected `u2f-devices` interface alone may not authorize a virtual UHID key.
+The guide includes the scoped host rule, verification, and browser restart step.
+
 Already have a vault? Use `yubiquity run --vault PATH`; it checks basic
 prerequisites before asking for your passphrase and waits for native hidraw
 permissions. `yubiquity doctor --vault PATH` diagnoses without secrets or setting
@@ -48,8 +53,11 @@ Approved public-site smoke tests also pass in Firefox and Chrome: webauthn.io
 accepts required-PIN resident registration, username login and username-less login;
 Yubico's technical demo accepts registration and authentication.
 
-Agent host access remains excluded. Ordinary distribution/confined browser
-packages and actual host systemd/udev deployment remain unverified. This is still
+Agent host access remains excluded. The user reported working webauthn.io
+registration on Ubuntu 24.04 with Firefox Snap 154.0 after adding the scoped
+device authorization; see the [manual host result](docs/test-report.md#snap-firefox-manual-host-smoke-test-2026-10-22).
+This is not the full automated browser matrix: other distribution/confined
+packages and actual host systemd execution remain unverified. This is still
 a software testing tool for disposable accounts, not a universally compatible,
 certified or hardware-protected authenticator.
 

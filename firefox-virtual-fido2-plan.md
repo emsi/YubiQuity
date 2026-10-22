@@ -156,6 +156,15 @@ After browser interoperability works, add a user service, a separate approval cl
 
 Root is needed only where the target deployment requires module loading or access-policy installation; host administration is not authorized in the current session. Keep the running authenticator unprivileged. Test stock Firefox and the now-runnable sandboxed Chrome through their actual HID paths. Snap/Flatpak confinement belongs in an OS/device-access test matrix, not in the authenticator protocol or as a prerequisite choice for the user. Physical security keys also depend on browser device permissions.
 
+User-run host update (2026-10-22): Ubuntu Firefox Snap 154.0 with snapd
+2.77.1 required a connected `u2f-devices` interface **and** a scoped
+`snap_firefox_firefox` udev tag. Ordinary FIDO client access and the generic
+`ID_SECURITY_TOKEN=1` property were insufficient for that snapd version.
+The user reported working registration after applying the host rule; see the
+[requirements](docs/host-testing.md#ubuntu-firefox-installed-as-a-snap) and
+[limited smoke-test evidence](docs/test-report.md#snap-firefox-manual-host-smoke-test-2026-10-22).
+This does not authorize agent host access or establish the full Snap browser matrix.
+
 Use [the setup script](scripts/install-dev-tools.sh) for the Ubuntu development dependencies and stock test-browser binaries. See [container device access](docs/container-uhid.md) for host setup and the distinction between UHID access, hidraw access, and browser sandbox requirements. No browser profile preferences or installed browser extensions are changed by setup.
 
 ### 6.1 Host startup and low-friction UX follow-up (2026-10-21)
@@ -277,7 +286,7 @@ The RP fixture should generate unpredictable challenges, validate origin and RP 
 | Two daemon instances using one vault | Second writer refused |
 | Trusted-attestation policy | Expected rejection, recorded as outside supported scope |
 
-Use stock Firefox stable/ESR and sandboxed Chrome for Testing on Linux inside this container, disposable profiles and the real external HID path. Record positive and negative coverage separately; both now pass for the recorded builds, including error/recovery. Ordinary distribution and confined-package coverage remain unverified. Do not request an agent host session, add broad capabilities, or disable browser/container sandboxing to obtain a passing result. A physical security key is optional for comparison and is not a prerequisite.
+Use stock Firefox stable/ESR and sandboxed Chrome for Testing on Linux inside this container, disposable profiles and the real external HID path. Record positive and negative coverage separately; both now pass for the recorded builds, including error/recovery. Beyond the user-reported Firefox Snap registration smoke test in §6, ordinary distribution and confined-package coverage remain unverified. Do not request an agent host session, add broad capabilities, or disable browser/container sandboxing to obtain a passing result. A physical security key is optional for comparison and is not a prerequisite.
 
 Keep CI tests repeatable without credentials for public websites. After the local fixture passes, use a small set of agreed public sites with disposable accounts as compatibility smoke tests. Account sign-in and any unrelated second factor remain with the user.
 
@@ -316,7 +325,7 @@ Checks and authorized development-tool installation on 2026-10-20 found the foll
 - The local test RP and browser automation tooling are now implemented; geckodriver and ChromeDriver are installed. Xvfb/xdotool exercise Firefox's real PIN prompt on an isolated test display.
 - A user available for the initial real PIN and presence interactions, or an explicit test backend for automated disposable runs.
 
-The authorized integration setup runs the daemon, Firefox and independent clients inside this container. UHID and dynamic hidraw access are already verified; the scoped helper creates the matching device node because device-cgroup permission alone does not populate `/dev`. Host execution and host-policy modification are outside this session's scope. The optional host deployment artifacts remain documented but their runtime behavior is unverified; do not request host access to validate them or make a privileged container the solution.
+The authorized integration setup runs the daemon, Firefox and independent clients inside this container. UHID and dynamic hidraw access are already verified; the scoped helper creates the matching device node because device-cgroup permission alone does not populate `/dev`. Agent host execution and host-policy modification are outside this session's scope. The optional host deployment artifacts have only the limited user-run runtime evidence recorded in §6; do not request host access to validate them or make a privileged container the solution.
 
 Useful user input, but not a blocker for starting implementation:
 

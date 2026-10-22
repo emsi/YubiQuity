@@ -11,6 +11,11 @@ this walkthrough is how to verify your host's device permissions and browser
 package. Use disposable demo accounts, not an important account's only passkey.
 This is software key storage, not hardware protection or trusted attestation.
 
+**Ubuntu Snap Firefox needs additional device authorization.** If Firefox's
+`about:support` page shows an Application Binary under `/snap/firefox/`, follow
+[the Snap requirements below](#ubuntu-firefox-installed-as-a-snap) before browser
+registration. Successful `fido2-token` commands alone do not prove Snap access.
+
 ## Already set up? Start here
 
 If you already created the test vault in this guide, **do not initialize it again**.
@@ -39,6 +44,7 @@ Add `--probe` to also attach and remove a temporary credential-free device and
 check dynamic hidraw access. Plain `doctor` does not create a device. A failed
 attachment now reports the node's mode/UID/GID and process groups before the
 temporary device is removed. It does not mean the vault needs reinitializing.
+`doctor` checks the invoking process, not Firefox's Snap confinement or device tags.
 
 The remaining setup steps are for a first installation, not every launch.
 
@@ -220,6 +226,98 @@ repeat `-S` on an already-configured vault; `-C` changes an existing PIN when
 needed. Never use `-R` as a troubleshooting shortcut: that is a reset command.
 See the [libfido2 command reference](https://developers.yubico.com/libfido2/Manuals/fido2-token.html).
 
+### Ubuntu Firefox installed as a Snap
+
+This extra host setup was needed for Firefox 154.0 (Snap revision 8763), snapd
+`2.77.1+ubuntu24.04`, Ubuntu 24.04, kernel `6.8.0-147-generic`, amd64. The user
+reported working registration after applying it; see the
+[manual host result](test-report.md#snap-firefox-manual-host-smoke-test-2026-10-22).
+Other Snap versions may have different device rules. If access already works
+and the Firefox tag is present, do not repeat the setup.
+
+Snap requires both a connected `u2f-devices` interface and per-device
+authorization, in addition to the ordinary `yubiquity` group permissions.
+[snapd 2.77.1's rules](https://github.com/canonical/snapd/blob/2.77.1/interfaces/builtin/u2f_devices.go#L246)
+match USB-parent vendor/product attributes. UHID has a virtual HID parent, not
+a USB device parent, so our device does not match those rules even when udev
+correctly reports `ID_FIDO_TOKEN=1` and `ID_SECURITY_TOKEN=1`. Changing the numeric
+HID IDs would not create the missing USB parent. The
+[upstream development code](https://github.com/canonical/snapd/blob/master/interfaces/builtin/u2f_devices.go)
+has a different matching path; the installed version and actual tags matter.
+
+Keep Terminal A's daemon running. In Terminal B, set the device to the **current
+READY path**, then inspect access:
+
+```bash
+yubiquity_device=/dev/hidraw0  # Replace with your current READY path.
+snap connections firefox | grep u2f
+snap version
+udevadm info --query=property --name="$yubiquity_device" |
+    grep -E '^(DEVPATH|ID_FIDO_TOKEN|ID_SECURITY_TOKEN|TAGS|CURRENT_TAGS)='
+```
+
+The `firefox:u2f-devices` row must have `:u2f-devices` in its **Slot** column.
+A `-` in that column means disconnected; a `-` in the final Notes column does
+not. Only if disconnected, grant the normal security-key interface:
+
+```bash
+sudo snap connect firefox:u2f-devices
+```
+
+If `CURRENT_TAGS` lacks `snap_firefox_firefox`, add the scoped authorization below.
+Fully quit Firefox, but keep YubiQuity running. Open a separate local rule file;
+if it already contains the rule from troubleshooting, keep it rather than adding
+a duplicate. Preserve any other existing contents:
+
+```bash
+sudoedit /etc/udev/rules.d/69-yubiquity-firefox-snap.rules
+```
+
+Add this as **one line**, then save:
+
+```udev
+ACTION=="add|change", SUBSYSTEM=="hidraw", DEVPATH=="/devices/virtual/misc/uhid/*/hidraw/hidraw*", SUBSYSTEMS=="hid", KERNELS=="0003:FFFF:0001.*", ATTRS{uevent}=="*HID_NAME=YubiQuity Software FIDO2*", ATTRS{uevent}=="*HID_UNIQ=yubiquity-*", ENV{ID_FIDO_TOKEN}=="1", TAG+="snap_firefox_firefox"
+```
+
+Keep the `69-` filename: the tag must be added before Snap's generated
+`70-snap.firefox.rules` processes device access. Do not edit that generated file
+or replace the existing `72-yubiquity.rules`. Snap's
+[tagging/hotplug implementation](https://github.com/canonical/snapd/blob/2.77.1/interfaces/udev/spec.go#L102)
+uses this tag to grant access to the matching device. This is an explicit host
+administrator permission grant for Firefox and the matching virtual device,
+not proof of device identity. Ordinary group permissions remain necessary;
+this does not grant Firefox `/dev/uhid` access, make devices world-writable,
+or disable confinement.
+
+Apply the rule to only the current device and verify the result:
+
+```bash
+: "${yubiquity_device:?Set this to the current READY /dev/hidrawN path first}" &&
+    sudo udevadm control --reload-rules &&
+    sudo udevadm trigger --action=change "/sys/class/hidraw/${yubiquity_device##*/}" &&
+    sudo udevadm settle
+
+udevadm info --query=property --name="$yubiquity_device" | grep '^CURRENT_TAGS='
+```
+
+`CURRENT_TAGS` must now contain `snap_firefox_firefox`; tag order does not matter.
+Reopen Firefox and continue with registration below. An `APPROVAL ... register`
+line in Terminal A establishes that the browser reached the authenticator's
+presence check; approve it and confirm the website reports success. The tag
+alone is not an end-to-end test. No rebuild, vault/PIN reset, daemon restart,
+browser replacement, or reboot is required for this permission change.
+
+This is one-time setup: the rule also matches newly attached YubiQuity devices
+when their hidraw number changes. To revoke the extra authorization, fully quit
+Firefox and stop YubiQuity, remove only this rule line with `sudoedit`, reload
+udev rules, then restart the daemon/browser. Detaching discards the old node and
+its tags; merely removing the line is not evidence that an existing process has
+lost access. Keep `72-yubiquity.rules` for ordinary host access.
+
+If registration still stalls after tagging and a full Firefox restart, report
+the outputs above and the exact symptom. Do not repeat group changes or PIN
+setup when those checks already passed, and do not disable the sandbox.
+
 ## 5. Register and sign in at webauthn.io
 
 In your normal browser, open [webauthn.io with the test options selected](https://webauthn.io/?regUserVerification=required&authUserVerification=required&attachment=cross_platform&discoverableCredential=required&attestation=none&regPubKeyAlgs=es256&regHints=security-key&authHints=security-key).
@@ -234,14 +332,18 @@ verification, ES256, and no attestation. You can check these in Advanced Setting
    at Terminal A. It will print something like:
 
    ```text
-   APPROVAL abc123... register rp="webauthn.io" account=...
+   APPROVAL 12-1234567890123456789 register rp="webauthn.io" account=Some("test-account")
    ```
 
-   Type this into **Terminal A**, replacing the token with the one just printed:
+   For that example, the exact reply in **Terminal A** would be:
 
    ```text
-   approve abc123...
+   approve 12-1234567890123456789
    ```
+
+   Use the complete token from **your current request**, not this example number
+   and not the literal word `TOKEN`. If it expired, retry Register and use the
+   newly printed token.
 
 4. The site should report **Success! Now try to authenticate...**
 5. Keep the same username and click **Authenticate**. Complete the normal browser
@@ -328,7 +430,9 @@ vault will not contain these test credentials.
 | Account belongs to `yubiquity`, but plain `id` does not show it | The running shell has stale groups. Use the separate `newgrp` step above or save your work and reboot; KDE logout/login may not refresh them. |
 | Permission denied opening UHID or hidraw | Compare current numeric groups from `id` with device ownership from `stat`, check the installed rule, and repeat the explicit access check above. Do not run the browser or daemon as root. |
 | No YubiQuity device while locked | Expected. It exists only while the unlocked daemon is attached. |
-| CLI sees the device, browser does not | Verify the security-key route. If you used `newgrp`, fully quit the browser and launch it from the updated shell, not KDE's menu. A confined browser package may also restrict device access; collect the package/version and error before changing policy. Do not disable its sandbox. |
+| CLI sees the device, browser does not | Verify the security-key route. For Snap Firefox, check both the interface connection and device tag using the [Snap requirements](#ubuntu-firefox-installed-as-a-snap). If you used `newgrp`, fully quit the browser and launch it from the updated shell, not KDE's menu. Do not disable its sandbox. |
+| Snap Firefox waits for a touch but Terminal A prints no `APPROVAL` | A successful `fido2-token -S` does not establish Snap access. Check for `snap_firefox_firefox` in `CURRENT_TAGS`, apply the scoped rule if missing, then fully quit/reopen Firefox. If the tag is already present and restarting does not help, collect the package/version and error; do not assume permissions are the only possible cause. |
+| `No pending request matches that approval token` | Enter `approve` followed by the actual complete token printed after `APPROVAL`, not the word `TOKEN`. If the request expired or was cancelled, retry on the site and use the new token. |
 | Vault path rejected | Its immediate directory must be yours and `0700`; user-owned `0775` ancestors are allowed. Inspect with `namei -l "$yubiquity_vault"` and check the remaining [vault requirements](vault.md). Do not recursively change home-directory permissions. |
 | Vault already locked | Another `run`, unlocked `serve`, or vault command is using it. Stop that instance; do not delete the lock file. |
 | PIN temporarily blocked | Stop and restart `run` to reattach, then use the correct PIN. Reattachment does not replenish the persistent retry budget; repeated wrong PINs can permanently block it. |

@@ -339,7 +339,9 @@ Development dependencies have been reinstalled after container recreation. Real 
 Transport, credentials, PIN, encrypted storage and a same-user control service
 are implemented. Firefox, sandboxed Chrome and independent-client tests pass
 within their recorded scope, including negative/recovery and approved public-site
-flows. Actual host deployment and other browser packages remain unverified. See the
+flows. The user later reported working Ubuntu Firefox Snap registration with
+scoped host device tagging; see the [manual host result](test-report.md#snap-firefox-manual-host-smoke-test-2026-10-22).
+Broader host deployment and other browser packages remain unverified. See the
 [implementation ledger](implementation-status.md).
 
 ## 6. Scoped device access on a normal Linux host
@@ -384,7 +386,10 @@ rules too: custom later rules or ACLs can change effective access. See the
 [udev rule semantics](https://www.freedesktop.org/software/systemd/man/latest/udev.html).
 
 The rules pass `udevadm verify` 255 and match the observed 6.8 UHID sysfs layout.
-Actual host udev permission/ACL application remains unverified here; there is no
-running host udev/systemd manager exposed to this container. Do not treat syntax
-validation as a passed host deployment. For optional user-service installation
+The user-run host test subsequently established ordinary FIDO client access and
+reported Firefox Snap registration after the additional
+[Snap authorization](host-testing.md#ubuntu-firefox-installed-as-a-snap).
+There is no running host udev/systemd manager exposed to this container; this
+limited result is not a full host permission/ACL or hotplug matrix, and syntax
+validation alone is not a passed host deployment. For optional user-service installation
 and explicit unlock/approval/lock commands, see the [README](../README.md#optional-local-service-and-approval-client).
