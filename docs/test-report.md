@@ -12,6 +12,50 @@ The user subsequently recreated the container with the supplied seccomp policy.
 Chrome is now runnable and the positive interoperability scenarios below pass.
 Host deployment remains outside authorized execution scope and unverified.
 
+## Tray and workspace follow-up (2026-10-23)
+
+The user reports that the GUI works on their KDE X11 host, but approvals appeared
+on the app's launch workspace. This increment hides the main window after unlock,
+gives each approval an independent top-level window, and recalls only the pending
+request from the tray. X11 requests the current desktop through EWMH. Native
+Wayland uses normal top-level placement and remaps an existing recalled window;
+the QWidget, request token and monotonic deadline are retained. No focus-policy
+bypass, KWin configuration, privileged compositor API or host access is involved.
+
+Passing local checks on Qt 6.4.2 / KWin 5.27.11:
+
+- Strict C++ build and the complete Qt suite: 14 substantive offline cases pass
+  (16 with setup/cleanup); four native-display cases run separately. New coverage
+  verifies independent window ownership, no-tray accessibility, recall without
+  reopening the main window, and no deadline renewal after hiding/re-presenting.
+- `tests/desktop_native.py`: graphical pinentry unlock/create/cancel, approval
+  rendering, second-launch activation and SIGKILL watch cleanup still pass.
+  Artifacts: `target/desktop-native-results/1792738699849770435/`.
+- `tests/desktop_workspaces.py`: both X11 and **native Wayland** pass with private
+  D-Bus, configuration/runtime directories and isolated KWin sessions. Checks
+  include automatic hiding after ready, a parentless approval on desktop 2 after
+  launch on desktop 1, tray recall on another desktop without changing the
+  current desktop, exact-token denial on close, browser cancellation, and keeping
+  an explicitly reopened main window visible across service heartbeats. X11
+  minimize-to-tray and Wayland close-to-tray pass. Native Wayland does not report
+  compositor-initiated minimized state through xdg-shell; Hide/close are the
+  supported explicit tray actions on both platforms.
+  Artifacts: `target/desktop-workspace-results/1792738699846786378/`.
+
+The workspace harness runs the real GUI and Rust control bridge against a test
+socket service and StatusNotifierItem host. It does not render a full Plasma
+panel, run a browser ceremony, or prove focus behavior under every compositor's
+policy. The distro Wayland compositor's file capability is omitted from a private
+test copy so it runs within existing container capabilities; no capability was
+added. Tests and dependencies are wired into CI, but a hosted CI result is not
+claimed. Manual X11/Wayland acceptance steps are in the
+[host guide](host-testing.md#graphical-interface-and-virtual-desktops).
+
+The earlier UHID permission blocker below is resolved: the container node is now
+`root:yubiquity 0660` and accessible to the development user. The user has also
+reported working host GUI operation. Neither fact substitutes for the full
+automated GUI/browser acceptance matrix or host screen-lock/suspend validation.
+
 ## Desktop UX increment (2026-10-22)
 
 This is a new UI acceptance track, not a rerun of the browser matrix below.

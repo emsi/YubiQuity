@@ -46,7 +46,61 @@ attachment now reports the node's mode/UID/GID and process groups before the
 temporary device is removed. It does not mean the vault needs reinitializing.
 `doctor` checks the invoking process, not Firefox's Snap confinement or device tags.
 
-The remaining setup steps are for a first installation, not every launch.
+## Graphical interface and virtual desktops
+
+This route uses the same vault and device permissions as the CLI. If those
+already work, no new udev or Firefox configuration is needed.
+
+1. Close an existing GUI with **Lock and quit**, or stop a foreground `run`
+   command with Ctrl+C. A second launch activates the existing GUI, so quit the
+   old version before testing an update.
+2. In your normal host terminal, install the GUI dependencies and build locally:
+
+   ```bash
+   cd "$HOME/git/YubiQuity"
+   sudo apt-get install cmake pkg-config libxcb1-dev qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins qt6-wayland pinentry-qt
+   CARGO_TARGET_DIR=target/host cargo build --release --locked &&
+       cmake -S desktop -B target/host-desktop -DCMAKE_BUILD_TYPE=Release &&
+       cmake --build target/host-desktop -j2
+   ```
+
+3. On virtual desktop 1, launch the newly built app as yourself:
+
+   ```bash
+   target/host-desktop/yubiquity-desktop \
+       --backend "$PWD/target/host/release/yubiquity" \
+       --vault "$HOME/.local/share/yubiquity/host-test/credentials.yq"
+   ```
+
+4. Click **Unlock** and enter the existing vault passphrase in pinentry. Once
+   ready, the main window disappears into the system tray. The key remains
+   available. Without a tray host, the main window stays visible.
+5. Switch to virtual desktop 2. In Firefox, register or sign in with your
+   disposable demo account and choose **Security key**. Enter the security-key
+   PIN if Firefox requests it. The separate approval window should appear on
+   desktop 2, with the site and account; the vault window stays hidden. Click
+   **Approve**, then check the site's success result.
+6. Start another request. While its approval is pending, switch desktops and
+   click the YubiQuity tray icon. It should bring that same request to your
+   current desktop without switching you back or opening the vault window.
+   Click **Cancel** and check that the ceremony is rejected. The original request
+   timeout keeps running while you move between desktops.
+7. With no pending request, click the tray icon to open the main window. **Hide
+   to tray** or the window's close button hides it again; **Lock and quit** exits
+   and detaches the key. X11 title-bar minimize also hides to the tray. On native
+   Wayland, use Hide/close for this behavior: a compositor's minimize action may
+   only minimize the window in the taskbar.
+
+Repeat the workspace checks in both Plasma **X11** and **Wayland** sessions if
+available at login. `echo "$XDG_SESSION_TYPE"` identifies the session. Leave Qt's
+platform selection at its default; `qt6-wayland` supplies native Wayland support.
+Window placement and focus ultimately follow your compositor's policy. If an
+approval is not raised, click the tray icon or its generic notification. No
+special KWin rules, all-desktop window settings, or browser modifications are
+required by the app. The automated tests cover isolated KWin 5.27 sessions;
+your panel, focus settings and installed KDE version are the host acceptance test.
+
+The remaining numbered setup sections are for a first installation, not every launch.
 
 ## 1. Build on the host
 

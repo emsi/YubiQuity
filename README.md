@@ -67,7 +67,7 @@ or trusted manufacturer attestation.
 
 ## Build and check
 
-### Desktop interface (new, device validation pending)
+### Desktop interface
 
 The optional Qt 6 desktop application replaces typed approval tokens with a
 native **Approve / Cancel** dialog showing the operation, site (RP ID), and
@@ -77,7 +77,7 @@ command-line arguments. Settings remember only the selected vault path.
 
 ```bash
 # Ubuntu 24.04 / compatible Debian systems, inside the environment being built:
-sudo apt-get install cmake qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins qt6-wayland pinentry-qt
+sudo apt-get install cmake pkg-config libxcb1-dev qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins qt6-wayland pinentry-qt
 cargo build --release --locked
 cmake -S desktop -B target/desktop -DCMAKE_BUILD_TYPE=Release
 cmake --build target/desktop -j2
@@ -85,21 +85,36 @@ target/desktop/yubiquity-desktop --backend "$PWD/target/release/yubiquity" \
     --vault "$HOME/.local/share/yubiquity/host-test/credentials.yq"
 ```
 
-Stop any existing foreground daemon using that vault first. Launch as your normal
+Stop any existing foreground daemon using that vault first; use **Lock and quit**
+to exit an older GUI before launching a rebuilt version. Launch as your normal
 desktop user, never with `sudo`. The app owns a locked service, offers Unlock,
-and attaches the key only after unlock. Open/create another vault from the main
-window. Closing the main window keeps it in the tray when a tray is available;
-**Lock and quit** always exits. Without a tray, closing locks and exits. No
-autostart or password caching is enabled. Device permissions and Firefox Snap
+and attaches the key only after unlock. Once ready, the main window hides to the
+tray automatically. Open/create another vault from the main window. **Hide to
+tray** and closing the main window keep the app running when a tray is available;
+**Lock and quit** always exits. Without a tray, the window stays visible after
+unlock, and closing locks and exits. No autostart or password caching is enabled.
+Device permissions and Firefox Snap
 requirements in the host guide still apply; the GUI does not change them.
+
+Approvals are independent windows, so the hidden vault window does not tie them
+to its workspace. Clicking the tray icon recalls the pending approval, or opens
+the main window when there is none. Current-workspace placement and recall pass
+in isolated KWin 5.27 X11 and native Wayland sessions. X11 uses a standard window
+desktop request; Wayland remaps a recalled window without replacing its request
+or deadline. The compositor still controls placement and focus. X11 title-bar
+minimize also hides to the tray; on Wayland use **Hide to tray** or close for a
+consistent result, since compositor-initiated minimization is not reported to the
+application by [xdg-shell](https://wayland.app/protocols/xdg-shell#xdg_toplevel:request:set_minimized).
+See the [host GUI walkthrough](docs/host-testing.md#graphical-interface-and-virtual-desktops).
 
 The request token remains internal. Cancel/Escape/window close denies that exact
 request; expiry, browser cancellation and disconnect remove the dialog. Enter
 defaults to Cancel. A lost desktop watch connection locks the service, and owned
 child processes die with the app. Screen-lock signals from supported KDE/GNOME
 interfaces and login1 sleep notifications trigger locking; unavailable monitoring
-is reported. Actual KDE/Wayland focus, tray and suspend behavior still need host
-validation. No claim of universal session-lock coverage is made.
+is reported. Actual host panel integration, focus preferences and screen-lock/
+suspend behavior still need host validation. No claim of universal session-lock
+coverage is made.
 
 For an existing `serve` instance, use `--socket /absolute/private/control.sock`
 instead of `--vault`. Only one desktop watcher is allowed. Advanced container
@@ -117,12 +132,16 @@ YUBIQUITY_TEST_BACKEND="$PWD/target/debug/yubiquity" \
 # Actual secret-prompt windows and app lifecycle, on a private test display:
 # requires xvfb, xdotool, python3-pil and dbus-daemon
 /usr/bin/python3 tests/desktop_native.py
+# Workspace and StatusNotifierItem tray behavior in private KWin sessions:
+# additionally requires kwin-x11, kwin-wayland, python3-dbus and python3-gi
+/usr/bin/python3 tests/desktop_workspaces.py
 ```
 
-These checks do not yet establish real UHID/browser GUI interoperability. The
-container currently needs its normal user's `/dev/uhid` access restored before
-that acceptance gate. Same-user/root compromise can bypass or spoof a software
-approval UI. Qt input/IPC can make transient secret copies: best-effort clearing
+These fixtures do not establish the full real UHID/browser GUI acceptance matrix.
+The user reports the GUI works on their host; the automated compositor tests use
+a test socket service and tray host, not a browser or a full Plasma panel.
+Same-user/root compromise can bypass or spoof a software approval UI. Qt input/IPC
+can make transient secret copies: best-effort clearing
 and disabled core dumps are not hardware isolation or a locked-memory guarantee.
 
 ### Core command-line build

@@ -6,7 +6,7 @@ and named browsers. The audit below separates that result from explicitly
 unverified deployments; neither a transport probe nor a single happy-path test
 is used as a substitute for the full acceptance work.
 
-## Current scope (2026-10-22)
+## Current scope (2026-10-23)
 
 Desktop follow-up is now partially implemented: a Qt 6 Widgets client uses
 `pinentry-qt` for vault secrets and native request-bound approval dialogs. The
@@ -21,13 +21,20 @@ startup checks, Qt widget/controller tests using the real Rust bridge and
 encrypted-vault code, real pinentry unlock/create/cancel windows on private
 Xvfb, and actual desktop-entry-point single-instance/SIGKILL-watch cleanup tests.
 See [desktop evidence](test-report.md#desktop-ux-increment-2026-10-22).
-Real-device GUI/browser acceptance is **paused**, not passed: `/dev/uhid` is
-currently `root:root 0600`, inaccessible to the normal container user (UID 1000).
-The user will restore access; the agent has not changed that host-bound node.
+The container's UHID permission blocker has been resolved (`root:yubiquity 0660`);
+full automated GUI/browser acceptance remains unverified. The user reports that
+the GUI works on their host and requested tray/workspace improvements.
+
+The main window now hides to the tray after unlock. Independent approval windows
+and explicit tray recall pass current-workspace tests under isolated KWin 5.27
+X11 and native Wayland. The complete Qt/native-prompt regressions also pass.
+These compositor tests use a fixture service and tray host, not a browser or a
+full Plasma panel. See [workspace evidence](test-report.md#tray-and-workspace-follow-up-2026-10-23)
+and the [host steps](host-testing.md#graphical-interface-and-virtual-desktops).
 
 Remaining desktop work: validate GUI registration/login/denial/cancellation and
 crash/recovery through actual UHID, then finish one-time installation/PIN setup
-polish. Full new-vault creation-to-browser flow and host KDE/Wayland focus/tray/
+polish. Full new-vault creation-to-browser flow, host panel/focus preferences and
 session-lock/suspend behavior are not yet established. No host access is requested.
 
 User-run host follow-up: Firefox Snap 154.0 (revision 8763), snapd
