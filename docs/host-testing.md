@@ -1,9 +1,9 @@
 # End-to-end testing on your Linux host
 
-Run YubiQuity and your existing Firefox or Chrome **on the host**, with two host
-terminals open. This walkthrough uses a separate test vault and foreground
-approval, so you can see each request. No browser changes, extensions, browser
-downloads, Docker changes, or disabled sandboxes are needed for this route.
+Run YubiQuity and your existing Firefox or Chrome **on the host**. This walkthrough
+uses a separate test vault and the graphical approval app. A terminal-only route
+is also described below. No browser changes, extensions, browser downloads,
+Docker changes, or disabled sandboxes are needed for this route.
 
 The package commands below assume Ubuntu/Debian; use equivalent packages on
 other distributions. The browser flows have passed in the development container;
@@ -19,18 +19,27 @@ registration. Successful `fido2-token` commands alone do not prove Snap access.
 ## Already set up? Start here
 
 If you already created the test vault in this guide, **do not initialize it again**.
-After pulling changes, rebuild and run it:
+Close any running GUI with **Lock and quit**, or stop a foreground `run` command
+with Ctrl+C. After pulling changes, build and launch the app with one command:
 
 ```bash
 cd "$HOME/git/YubiQuity"
-CARGO_TARGET_DIR=target/host cargo build --release --locked &&
-    target/host/release/yubiquity run --vault "$HOME/.local/share/yubiquity/host-test/credentials.yq"
+./scripts/desktop.sh run --vault "$HOME/.local/share/yubiquity/host-test/credentials.yq"
 ```
 
-Startup checks the existing vault and UHID access before asking for the
-passphrase. It then waits for the exact hidraw node to become accessible while
-udev applies permissions. It never changes device permissions, invokes a helper
-unless explicitly selected, or creates a missing vault during `run`.
+This builds **both the backend and the GUI** and launches the rebuilt GUI with
+that backend. Use the same command for subsequent launches and updates; the
+build is incremental. `cargo build` alone does **not** rebuild the graphical app.
+If the GUI is already running, the launcher asks you to close it and stops rather
+than silently activating that existing process. If GUI dependencies are missing,
+install the packages in the next section once. For a build without a window:
+
+```bash
+./scripts/desktop.sh build
+```
+
+Click **Unlock** in the app. Once ready it hides to the tray; browser requests
+open a separate **Approve / Cancel** window. Follow the workspace checks below.
 
 If something fails, this optional check reports the executable, **running
 process** groups, vault path/envelope, and installed rule comparison without
@@ -52,23 +61,18 @@ This route uses the same vault and device permissions as the CLI. If those
 already work, no new udev or Firefox configuration is needed.
 
 1. Close an existing GUI with **Lock and quit**, or stop a foreground `run`
-   command with Ctrl+C. A second launch activates the existing GUI, so quit the
-   old version before testing an update.
-2. In your normal host terminal, install the GUI dependencies and build locally:
+   command with Ctrl+C.
+2. In your normal host terminal, install the GUI dependencies once:
 
    ```bash
    cd "$HOME/git/YubiQuity"
    sudo apt-get install cmake pkg-config libxcb1-dev qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins qt6-wayland pinentry-qt
-   CARGO_TARGET_DIR=target/host cargo build --release --locked &&
-       cmake -S desktop -B target/host-desktop -DCMAKE_BUILD_TYPE=Release &&
-       cmake --build target/host-desktop -j2
    ```
 
-3. On virtual desktop 1, launch the newly built app as yourself:
+3. On virtual desktop 1, build and launch the app as yourself:
 
    ```bash
-   target/host-desktop/yubiquity-desktop \
-       --backend "$PWD/target/host/release/yubiquity" \
+   ./scripts/desktop.sh run \
        --vault "$HOME/.local/share/yubiquity/host-test/credentials.yq"
    ```
 
@@ -100,6 +104,21 @@ special KWin rules, all-desktop window settings, or browser modifications are
 required by the app. The automated tests cover isolated KWin 5.27 sessions;
 your panel, focus settings and installed KDE version are the host acceptance test.
 
+## Terminal-only alternative
+
+For typed approvals without the GUI, use this separate CLI route with two host
+terminals. It builds only the backend:
+
+```bash
+CARGO_TARGET_DIR=target/host cargo build --release --locked &&
+    target/host/release/yubiquity run --vault "$HOME/.local/share/yubiquity/host-test/credentials.yq"
+```
+
+CLI startup checks the existing vault and UHID access before asking for the
+passphrase. It then waits for the exact hidraw node to become accessible while
+udev applies permissions. It never changes device permissions, invokes a helper
+unless explicitly selected, or creates a missing vault during `run`.
+
 The remaining numbered setup sections are for a first installation, not every launch.
 
 ## 1. Build on the host
@@ -113,15 +132,18 @@ sudo apt-get install build-essential pkg-config fido2-tools kmod udev
 ```
 
 If `rustup` is missing, install it using the [official Rust instructions](https://rust-lang.org/tools/install/)
-and reopen your terminal. Build from the checkout:
+and reopen your terminal. For the GUI, install the dependencies above and use
+`./scripts/desktop.sh build`. To build just the CLI for the remaining terminal
+setup steps:
 
 ```bash
 CARGO_TARGET_DIR=target/host cargo build --release --locked
 ```
 
 The repository pins Rust 1.99.1; rustup downloads that toolchain if needed, and
-Cargo downloads missing dependencies. The separate `target/host` directory avoids
-reusing a container-built executable that might require a different host libc.
+Cargo downloads missing dependencies. Run the launcher from your host terminal
+so it uses your host's toolchain. `target/host` and `target/host-desktop` are the
+build outputs used consistently by the launcher and desktop tests.
 Do **not** use `scripts/install-dev-tools.sh` for this walkthrough: it also installs
 the container's browser automation tools and downloads separate browsers.
 

@@ -32,6 +32,13 @@ These compositor tests use a fixture service and tray host, not a browser or a
 full Plasma panel. See [workspace evidence](test-report.md#tray-and-workspace-follow-up-2026-10-23)
 and the [host steps](host-testing.md#graphical-interface-and-virtual-desktops).
 
+Build handoff corrected: `scripts/desktop.sh run` builds both the Rust backend and
+Qt GUI and refuses to silently reuse an already-running GUI. The canonical GUI
+output is now `target/host-desktop` for users, tests and CI; the obsolete
+`target/desktop` build directory was removed. Release builds, launcher failure
+checks and Qt/native/X11/Wayland regressions pass on those same outputs. See the
+[build correction evidence](test-report.md#desktop-build-and-launch-correction-2026-10-23).
+
 Remaining desktop work: validate GUI registration/login/denial/cancellation and
 crash/recovery through actual UHID, then finish one-time installation/PIN setup
 polish. Full new-vault creation-to-browser flow, host panel/focus preferences and

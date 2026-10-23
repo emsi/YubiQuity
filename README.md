@@ -78,17 +78,23 @@ command-line arguments. Settings remember only the selected vault path.
 ```bash
 # Ubuntu 24.04 / compatible Debian systems, inside the environment being built:
 sudo apt-get install cmake pkg-config libxcb1-dev qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins qt6-wayland pinentry-qt
-cargo build --release --locked
-cmake -S desktop -B target/desktop -DCMAKE_BUILD_TYPE=Release
-cmake --build target/desktop -j2
-target/desktop/yubiquity-desktop --backend "$PWD/target/release/yubiquity" \
+./scripts/desktop.sh run \
     --vault "$HOME/.local/share/yubiquity/host-test/credentials.yq"
 ```
 
+Use this same command after pulling updates. It builds **both the backend and
+the GUI**, then launches that GUI with its matching backend. `cargo build` alone
+builds only the command-line backend. To build without opening a window, use
+`./scripts/desktop.sh build`. The GUI build directory is `target/host-desktop`;
+the backend is `target/host/release/yubiquity`. Desktop tests and CI use these
+same outputs. The former `target/desktop` GUI build is no longer used.
+
 Stop any existing foreground daemon using that vault first; use **Lock and quit**
 to exit an older GUI before launching a rebuilt version. Launch as your normal
-desktop user, never with `sudo`. The app owns a locked service, offers Unlock,
-and attaches the key only after unlock. Once ready, the main window hides to the
+desktop user, never with `sudo`. The launcher reports an already-running GUI and
+stops; it does not silently activate an older process after rebuilding. The app
+owns a locked service, offers Unlock, and attaches the key only after unlock.
+Once ready, the main window hides to the
 tray automatically. Open/create another vault from the main window. **Hide to
 tray** and closing the main window keep the app running when a tray is available;
 **Lock and quit** always exits. Without a tray, the window stays visible after
@@ -126,9 +132,10 @@ Offline GUI tests exercise real Qt widgets, the Rust socket client, exact-token
 decisions, cancellation/disconnect, deadlines and encrypted-vault FD input:
 
 ```bash
-cargo build --locked
-YUBIQUITY_TEST_BACKEND="$PWD/target/debug/yubiquity" \
-    ctest --test-dir target/desktop --output-on-failure
+./scripts/desktop.sh build
+/usr/bin/python3 tests/desktop_launcher.py
+YUBIQUITY_TEST_BACKEND="$PWD/target/host/release/yubiquity" \
+    ctest --test-dir target/host-desktop --output-on-failure
 # Actual secret-prompt windows and app lifecycle, on a private test display:
 # requires xvfb, xdotool, python3-pil and dbus-daemon
 /usr/bin/python3 tests/desktop_native.py

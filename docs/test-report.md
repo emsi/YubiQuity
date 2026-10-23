@@ -12,6 +12,45 @@ The user subsequently recreated the container with the supplied seccomp policy.
 Chrome is now runnable and the positive interoperability scenarios below pass.
 Host deployment remains outside authorized execution scope and unverified.
 
+## Desktop build and launch correction (2026-10-23)
+
+The previous workspace tests exercised `target/desktop/yubiquity-desktop`, while
+the host instructions launched `target/host-desktop/yubiquity-desktop`. The latter
+binary in the shared checkout still predated the tray changes. The user's rebuild
+command invoked only Cargo, which does not build the Qt GUI. Passing tests of the
+separate development binary did not establish that their launch path was updated.
+
+`scripts/desktop.sh run` now builds both components and starts the resulting GUI
+with the matching backend. `build` performs the same build without opening a
+window. The single GUI build directory is `target/host-desktop`, with the backend
+in `target/host/release`. Qt tests, native tests, compositor tests, CI and the
+user-facing instructions now use those same outputs. The obsolete generated
+`target/desktop` directory was removed from this checkout. No vault, host setting
+or running host application was changed.
+
+The launcher stops on any build failure. A new GUI option also rejects a launch
+if an existing GUI owns the session name, with instructions to use **Lock and
+quit**; it cannot silently report success after activating an older process.
+Ordinary installed-app activation without that option retains its existing
+single-instance behavior.
+
+Passing local verification:
+
+- `scripts/desktop.sh build`: both release components built successfully.
+- `tests/desktop_launcher.py`: three cases cover rebuilding both artifacts,
+  paths with spaces and invocation from outside the checkout, build-only mode,
+  and refusing to launch an old binary after Cargo/configure/compile failure.
+- Full Qt suite using the canonical release backend: 14 substantive offline
+  cases pass (16 including setup/cleanup), with four native cases run separately.
+- `tests/desktop_native.py`: actual build-and-run launcher, graphical pinentry,
+  single-instance activation, explicit update refusal and SIGKILL watch cleanup.
+  Artifacts: `target/desktop-native-results/1792758899666543308/`.
+- `tests/desktop_workspaces.py`: canonical GUI/backend pass the existing
+  isolated KWin X11 and native Wayland workspace/tray checks.
+  Artifacts: `target/desktop-workspace-results/1792758951585001649/`.
+
+These remain container-local fixture tests, not a new host browser ceremony.
+
 ## Tray and workspace follow-up (2026-10-23)
 
 The user reports that the GUI works on their KDE X11 host, but approvals appeared
