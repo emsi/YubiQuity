@@ -1,3 +1,4 @@
+#include "presentation.h"
 #include "process.h"
 #include "ui.h"
 #include "window.h"
@@ -10,6 +11,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QWindow>
 #include <QtEndian>
 #include <csignal>
 #include <sys/stat.h>
@@ -28,6 +30,14 @@ static QJsonObject snapshotEvent(int sequence, QJsonObject request = {}) {
   if (!request.isEmpty())
     state.insert("pending", request);
   return {{"version", 1}, {"sequence", sequence}, {"snapshot", state}};
+}
+
+static ApprovalDialog *visibleApproval() {
+  for (auto *widget : QApplication::topLevelWidgets())
+    if (auto *dialog = qobject_cast<ApprovalDialog *>(widget);
+        dialog && dialog->isVisible())
+      return dialog;
+  return nullptr;
 }
 
 // Test-only socket fixture, never a production authenticator or approval mode.
@@ -214,6 +224,22 @@ private slots:
     dialog.findChild<QPushButton *>("approve")->click();
     QCOMPARE(decisions.size(), 0);
   }
+  void presentingAgainCannotRenewDeadline() {
+    ApprovalDialog dialog(
+        {"request-A", "register", "example.test", {}, false, 30});
+    QSignalSpy decisions(&dialog, &ApprovalDialog::decision),
+        expired(&dialog, &ApprovalDialog::expired);
+    presentWindow(dialog);
+    // Leave the expiry event queued: the monotonic deadline must still reject
+    // a click immediately after recall, even before that event is delivered.
+    QTest::qSleep(40);
+    dialog.hide();
+    presentWindow(dialog);
+    dialog.findChild<QPushButton *>("approve")->click();
+    QCOMPARE(decisions.size(), 0);
+    QCOMPARE(expired.size(), 1);
+    QCOMPARE(dialog.token(), QString("request-A"));
+  }
   void resetHasExplicitDestructiveLanguage() {
     ApprovalDialog dialog({"reset", "reset", {}, {}, false, 1000});
     QCOMPARE(dialog.findChild<QPushButton *>("approve")->text(),
@@ -266,20 +292,24 @@ private slots:
     FakeService server;
     Window window(backend, {}, server.path(), {});
     window.show();
-    QTRY_VERIFY(window.findChild<ApprovalDialog *>("approvalDialog"));
-    auto *first = window.findChild<ApprovalDialog *>("approvalDialog");
+    QTRY_VERIFY(visibleApproval());
+    QPointer<ApprovalDialog> first = visibleApproval();
+    QVERIFY(!first->parentWidget());
+    QVERIFY(!first->windowHandle()->transientParent());
+    QCOMPARE(first->windowType(), Qt::Window);
     // Removal is cancellation, never approval/denial for a later request.
     server.request = {};
     server.publish();
-    QTRY_VERIFY(!window.findChild<ApprovalDialog *>("approvalDialog"));
+    QTRY_VERIFY(!visibleApproval());
+    QTRY_VERIFY(!first);
     QVERIFY(server.commands.isEmpty());
-    Q_UNUSED(first);
     server.request = pending("request-B");
     server.publish();
-    QTRY_VERIFY(window.findChild<ApprovalDialog *>("approvalDialog"));
-    window.findChild<ApprovalDialog *>()
-        ->findChild<QPushButton *>("approve")
-        ->click();
+    QTRY_VERIFY(visibleApproval());
+    window.hide();
+    window.Show();
+    QVERIFY(!window.isVisible()); // Tray activation presents only the request.
+    visibleApproval()->findChild<QPushButton *>("approve")->click();
     QTRY_COMPARE(server.commands.size(), 1);
     QCOMPARE(server.commands[0].value("command").toString(),
              QString("approve"));
@@ -287,12 +317,12 @@ private slots:
              QString("request-B"));
     server.publish();
     QTest::qWait(50);
-    QVERIFY(!window.findChild<ApprovalDialog *>("approvalDialog"));
+    QVERIFY(!visibleApproval());
     server.request = pending("request-C");
     server.publish();
-    QTRY_VERIFY(window.findChild<ApprovalDialog *>("approvalDialog"));
+    QTRY_VERIFY(visibleApproval());
     server.watcher->disconnectFromServer();
-    QTRY_VERIFY(!window.findChild<ApprovalDialog *>("approvalDialog"));
+    QTRY_VERIFY(!visibleApproval());
     QCOMPARE(server.commands.size(), 1);
     QCOMPARE(window.findChild<QLabel *>("status")->text(),
              QString("Not connected"));
@@ -301,10 +331,10 @@ private slots:
     FakeService server;
     Window window(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"), {},
                   server.path(), {});
-    QTRY_VERIFY(window.findChild<ApprovalDialog *>("approvalDialog"));
+    QTRY_VERIFY(visibleApproval());
     window.screenLocked(true);
     QTRY_VERIFY(!server.watcher);
-    QTRY_VERIFY(!window.findChild<ApprovalDialog *>("approvalDialog"));
+    QTRY_VERIFY(!visibleApproval());
     QVERIFY(!window.findChild<QPushButton *>("unlock")->isEnabled());
     window.screenLocked(false);
     QVERIFY(window.findChild<QPushButton *>("unlock")->isEnabled());
@@ -329,6 +359,31 @@ private slots:
     QTRY_COMPARE_WITH_TIMEOUT(listed.size(), 1, 10000);
     QVERIFY2(listed[0][0].toBool(), qPrintable(listed[0][2].toString()));
     QVERIFY(!listed[0][1].toByteArray().contains("disposable test passphrase"));
+  }
+  void readyWithoutTrayStaysAccessible() {
+    if (QSystemTrayIcon::isSystemTrayAvailable())
+      QSKIP("Requires no tray host");
+    FakeService server;
+    server.request = {};
+    Window window(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"), {},
+                  server.path(), {});
+    window.show();
+    QTRY_COMPARE(window.findChild<QLabel *>("status")->text(),
+                 QString("Ready"));
+    QVERIFY(window.isVisible());
+    QVERIFY(!window.findChild<QPushButton *>("hideToTray")->isVisible());
+  }
+  void independentPromptDiesWithOwner() {
+    FakeService server;
+    auto window =
+        std::make_unique<Window>(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"),
+                                 QString{}, server.path(), QString{});
+    QTRY_VERIFY(visibleApproval());
+    QPointer<ApprovalDialog> dialog = visibleApproval();
+    window.reset();
+    QVERIFY(!dialog);
+    QVERIFY(!visibleApproval());
+    QVERIFY(server.commands.isEmpty());
   }
 };
 

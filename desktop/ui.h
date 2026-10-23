@@ -27,7 +27,7 @@ private:
 class ApprovalDialog : public QDialog {
   Q_OBJECT
 public:
-  ApprovalDialog(const Pending &request, QWidget *parent = nullptr);
+  explicit ApprovalDialog(const Pending &request);
   void shortenLifetime(qint64 remaining);
   QString token() const { return request.token; }
 signals:

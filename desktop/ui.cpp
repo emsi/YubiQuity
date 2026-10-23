@@ -2,6 +2,7 @@
 #include <QDialogButtonBox>
 #include <QLabel>
 #include <QScrollArea>
+#include <QStyle>
 #include <QVBoxLayout>
 #include <algorithm>
 
@@ -68,9 +69,18 @@ bool SnapshotModel::update(const QJsonObject &event, QString &error) {
   return true;
 }
 
-ApprovalDialog::ApprovalDialog(const Pending &pending, QWidget *parent)
-    : QDialog(parent), request(pending), deadline(pending.remaining) {
+ApprovalDialog::ApprovalDialog(const Pending &pending)
+    // No transient parent or group-transient dialog: the vault window may be
+    // hidden on another workspace. This request gets its own taskbar entry and
+    // normal top-level placement on both X11 and Wayland. Window owns its
+    // lifetime.
+    : QDialog(nullptr, Qt::Window | Qt::WindowTitleHint |
+                           Qt::WindowSystemMenuHint |
+                           Qt::WindowCloseButtonHint),
+      request(pending), deadline(pending.remaining) {
   setObjectName("approvalDialog");
+  setWindowIcon(QIcon::fromTheme(
+      "dialog-password", style()->standardIcon(QStyle::SP_ComputerIcon)));
   setWindowTitle(request.operation == "register" ? tr("Create a passkey")
                  : request.operation == "authenticate"
                      ? tr("Sign in with a passkey")

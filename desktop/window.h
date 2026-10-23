@@ -22,6 +22,7 @@ public slots:
 
 protected:
   void closeEvent(QCloseEvent *event) override;
+  void changeEvent(QEvent *event) override;
 
 private:
   QString backend, vault, socket, externalSocket, helper;
@@ -31,7 +32,7 @@ private:
   QTimer startup, heartbeat;
   int startupAttempts = 0;
   bool stopping = false, busy = false, sessionLocked = false,
-       unlockOnConnect = false;
+       unlockOnConnect = false, hideWhenReady = false;
   SnapshotModel model;
   QString dismissedToken, displayedState;
   std::unique_ptr<QTemporaryDir> runtime;
@@ -39,7 +40,7 @@ private:
   QPointer<Command> command;
   QPointer<Pinentry> pinentry;
   QLabel *status, *detail, *vaultLabel, *sessionNote;
-  QPushButton *unlock, *lock, *choose, *create;
+  QPushButton *unlock, *lock, *choose, *create, *hideToTray;
   QSystemTrayIcon *tray;
   void startService(bool askUnlock = false);
   void startWatch();
@@ -48,6 +49,7 @@ private:
   void readSnapshots();
   void applySnapshot();
   void dismissApproval();
+  void hideInTray();
   void setBusy(bool value);
   void updateButtons();
   void selectVault(bool newVault);

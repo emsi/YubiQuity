@@ -1,4 +1,5 @@
 #include "window.h"
+#include "presentation.h"
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDBusConnection>
@@ -11,6 +12,7 @@
 #include <QJsonDocument>
 #include <QMenu>
 #include <QStandardPaths>
+#include <QStyle>
 #include <QVBoxLayout>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -20,7 +22,8 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
     : backend(std::move(executable)), vault(std::move(vaultPath)),
       externalSocket(std::move(socketPath)), helper(std::move(helperPath)) {
   setWindowTitle(tr("YubiQuity"));
-  setWindowIcon(QIcon::fromTheme("dialog-password"));
+  setWindowIcon(QIcon::fromTheme(
+      "dialog-password", style()->standardIcon(QStyle::SP_ComputerIcon)));
   resize(520, 360);
   auto *body = new QWidget;
   auto *layout = new QVBoxLayout(body);
@@ -31,7 +34,7 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
   status->setFont(font);
   detail =
       new QLabel(tr("Unlock your vault, then use a passkey in your browser. "
-                    "Requests will appear here for confirmation."));
+                    "Requests open a separate confirmation window."));
   detail->setObjectName("detail");
   vaultLabel = new QLabel;
   sessionNote = new QLabel;
@@ -54,6 +57,9 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
                     "Approve replaces touching a physical key."));
   explanation->setWordWrap(true);
   layout->addWidget(explanation);
+  hideToTray = new QPushButton(tr("Hide to tray"));
+  hideToTray->setObjectName("hideToTray");
+  layout->addWidget(hideToTray);
   auto *quit = new QPushButton(tr("Lock and quit"));
   layout->addWidget(quit);
   setCentralWidget(body);
@@ -72,8 +78,10 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
               Show();
           });
   connect(tray, &QSystemTrayIcon::messageClicked, this, &Window::Show);
-  if (QSystemTrayIcon::isSystemTrayAvailable())
-    tray->show();
+  // Qt registers the visible icon if a tray host appears later. Do not hide a
+  // window unless a host is actually available, however.
+  tray->show();
+  connect(hideToTray, &QPushButton::clicked, this, &Window::hideInTray);
   connect(quit, &QPushButton::clicked, qApp, &QApplication::quit);
   connect(unlock, &QPushButton::clicked, this, [this] {
     if (model.state == "locked")
@@ -143,13 +151,25 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
 Window::~Window() { stopService(); }
 
 void Window::Show() {
-  showNormal();
-  raise();
-  activateWindow();
   if (approval) {
-    approval->show();
-    approval->raise();
-    approval->activateWindow();
+    presentWindow(*approval);
+    return;
+  }
+  presentWindow(*this);
+}
+
+void Window::hideInTray() {
+  if (QSystemTrayIcon::isSystemTrayAvailable())
+    hide();
+}
+
+void Window::changeEvent(QEvent *event) {
+  QMainWindow::changeEvent(event);
+  if (event->type() == QEvent::WindowStateChange && isMinimized()) {
+    QTimer::singleShot(0, this, [this] {
+      if (isMinimized())
+        hideInTray();
+    });
   }
 }
 
@@ -176,6 +196,7 @@ void Window::updateButtons() {
   choose->setEnabled(!busy && model.state != "ready" &&
                      externalSocket.isEmpty());
   create->setEnabled(choose->isEnabled());
+  hideToTray->setVisible(QSystemTrayIcon::isSystemTrayAvailable());
 }
 
 void Window::startService(bool askUnlock) {
@@ -256,6 +277,8 @@ void Window::stopService() {
   model = SnapshotModel{};
   dismissedToken.clear();
   displayedState.clear();
+  hideWhenReady = false;
+  tray->setToolTip(tr("YubiQuity — locked"));
   busy = false;
   stopping = false;
   updateButtons();
@@ -322,6 +345,11 @@ void Window::dismissApproval() {
     return;
   approval->disconnect(this);
   approval->hide();
+  // It is deliberately not a child/transient of the vault window. Reparent only
+  // AFTER hiding and disconnecting, so QObject also cleans it up at app
+  // shutdown if the event loop has already stopped before deleteLater is
+  // processed.
+  approval->setParent(this);
   approval->deleteLater();
   approval = nullptr;
 }
@@ -337,13 +365,18 @@ void Window::applySnapshot() {
   tray->setToolTip(model.state == "ready" ? tr("YubiQuity — ready")
                                           : tr("YubiQuity — locked"));
   if (displayedState != model.state) {
+    hideWhenReady = model.state == "ready";
     displayedState = model.state;
     detail->setText(
         model.state == "ready"
             ? tr("Choose “Security key” in your browser. A confirmation will "
-                 "appear here when it needs your approval.")
+                 "open when it needs your approval.")
             : tr("Unlock to make your software security key available to "
                  "browsers."));
+  }
+  if (hideWhenReady && !busy) {
+    hideWhenReady = false;
+    hideInTray(); // Once per ready transition, never on every heartbeat.
   }
   if (model.pending.token.isEmpty()) {
     dismissApproval();
@@ -355,6 +388,7 @@ void Window::applySnapshot() {
     return;
   }
   status->setText(tr("Approval requested"));
+  tray->setToolTip(tr("YubiQuity — approval requested"));
   if (model.pending.token == dismissedToken)
     return;
   if (approval && approval->token() == model.pending.token) {
@@ -362,7 +396,7 @@ void Window::applySnapshot() {
     return;
   }
   dismissApproval();
-  approval = new ApprovalDialog(model.pending, this);
+  approval = new ApprovalDialog(model.pending);
   connect(approval, &ApprovalDialog::expired, this, [this] {
     if (approval)
       dismissedToken = approval->token();
@@ -387,10 +421,8 @@ void Window::applySnapshot() {
                                     .arg(error));
             });
       });
-  approval->show();
-  approval->raise();
-  approval->activateWindow();
-  if (tray->isVisible())
+  presentWindow(*approval);
+  if (QSystemTrayIcon::isSystemTrayAvailable())
     tray->showMessage(tr("YubiQuity"),
                       tr("A passkey request needs your confirmation."),
                       QSystemTrayIcon::Information, 5000);
