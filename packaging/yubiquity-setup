@@ -1,0 +1,37 @@
+#!/bin/sh
+# Explicit, one-time administrator setup on the computer running the browser.
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+usage() {
+    printf '%s\n' 'Usage: sudo yubiquity-setup USER' \
+        'Grants USER UHID access, loads UHID, refreshes device rules and connects' \
+        'Firefox Snap to security keys if that browser package is installed.'
+}
+case "${1:-}" in -h|--help) usage; exit 0 ;; esac
+if [ "$#" -ne 1 ]; then usage >&2; exit 2; fi
+if [ "$(id -u)" -ne 0 ]; then
+    printf '%s\n' 'Run this setup command with sudo.' >&2
+    exit 1
+fi
+task_user=$1
+task_uid=$(id -u -- "$task_user")
+if [ "$task_uid" -eq 0 ]; then
+    printf '%s\n' 'Specify your normal desktop account, not root.' >&2
+    exit 1
+fi
+getent group yubiquity >/dev/null || groupadd --system yubiquity
+usermod -a -G yubiquity -- "$task_user"
+if [ ! -e /sys/class/misc/uhid ]; then
+    modprobe uhid
+fi
+udevadm control --reload-rules
+udevadm trigger --action=change /sys/class/misc/uhid
+udevadm settle
+if command -v snap >/dev/null 2>&1 && snap list firefox >/dev/null 2>&1; then
+    snap connect firefox:u2f-devices
+fi
+printf 'Device access configured for %s.\n' "$task_user"
+printf '%s\n' 'After first setup, save your work and reboot once to refresh desktop group membership.' \
+    'Then open YubiQuity from the application menu, as your normal user.'

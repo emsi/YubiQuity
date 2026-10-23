@@ -1,0 +1,3 @@
+# Authorize only this project's virtual FIDO device for Firefox Snap. The normal
+# snap security-key interface must also be connected. Run before 70-snap rules.
+ACTION=="add|change", SUBSYSTEM=="hidraw", DEVPATH=="/devices/virtual/misc/uhid/*/hidraw/hidraw*", SUBSYSTEMS=="hid", KERNELS=="0003:FFFF:0001.*", ATTRS{uevent}=="*HID_NAME=YubiQuity Software FIDO2*", ATTRS{uevent}=="*HID_UNIQ=yubiquity-*", ENV{ID_FIDO_TOKEN}=="1", TAG+="snap_firefox_firefox"

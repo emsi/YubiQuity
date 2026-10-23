@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+if [ "$1" = configure ]; then
+    getent group yubiquity >/dev/null || groupadd --system yubiquity
+    # A package can be installed in a chroot without a running udev daemon.
+    if [ -S /run/udev/control ]; then
+        udevadm control --reload-rules || true
+        udevadm trigger --action=change --subsystem-match=misc --sysname-match=uhid || true
+    fi
+    printf '%s\n' 'YubiQuity installed. First-time device setup: sudo yubiquity-setup "$USER"'
+fi

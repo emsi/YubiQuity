@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+case "$1" in
+    remove|purge)
+        if [ -S /run/udev/control ]; then
+            udevadm control --reload-rules || true
+        fi
+        ;;
+esac
+# Keep the group and all users' vaults/settings, including on purge.

@@ -12,6 +12,25 @@ The user subsequently recreated the container with the supplied seccomp policy.
 Chrome is now runnable and the positive interoperability scenarios below pass.
 Host deployment remains outside authorized execution scope and unverified.
 
+## First binary release packaging (2026-10-23)
+
+`scripts/package-deb.py` builds both canonical components and packages Ubuntu
+24.04 amd64 binaries, desktop integration, device/Snap rules, module configuration,
+an explicit account setup helper, documentation and third-party notices. Shared
+library dependencies come from `dpkg-shlibdeps`. A build manifest identifies the
+source commit and packaged executable hashes; release assets have SHA-256 sums.
+
+All four package checks pass: archive ownership/modes and executable versions,
+checksums and notices, apt dependency resolution without development packages,
+desktop/udev/shell validation, and maintainer/setup scripts executed in a
+disposable chroot with fake system tools. The latter checks idempotent group
+creation, exact-user membership, UHID/rule setup, optional Firefox Snap connection,
+invalid-user rejection and preservation of vault/group data on purge. No host
+devices or system directories are mounted into the chroot. This establishes the
+script behavior and dependency resolution, not installation on every host. The
+backend extracted from the actual `.deb` also passes all six real UHID ClientPIN
+integration tests, including repeated errors followed by successful use.
+
 ## Unlimited PIN and passphrase attempts (2026-10-23)
 
 At the user's request, removed temporary and permanent PIN lockouts, including

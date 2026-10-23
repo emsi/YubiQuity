@@ -19,7 +19,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends python3-fido2 python3-cryptography python3-argon2 python3-nacl python3-gi gir1.2-umockdev-1.0 umockdev udev docker-compose-v2
-          sudo apt-get install -y --no-install-recommends cmake pkg-config libxcb1-dev qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins qt6-wayland pinentry-qt desktop-file-utils
+          sudo apt-get install -y --no-install-recommends cmake pkg-config libxcb1-dev qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins qt6-wayland pinentry-qt desktop-file-utils dpkg-dev binutils
           sudo apt-get install -y --no-install-recommends xvfb xdotool python3-pil dbus-daemon kwin-x11 kwin-wayland python3-dbus
           rustup show active-toolchain
       - name: Format, lint and test
@@ -46,6 +46,16 @@ jobs:
           /usr/bin/python3 tests/packaging.py
           sudo -n /usr/bin/python3 tests/udev_behavior.py
           /usr/bin/python3 tests/container_seccomp.py
+      - name: Build and verify installable release package
+        run: |
+          ./scripts/package-deb.py
+          /usr/bin/python3 tests/release_package.py target/release-assets/v*/yubiquity_*.deb
+      - name: Retain installable package and build manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: yubiquity-ubuntu24.04-amd64
+          path: target/release-assets/
+          retention-days: 14
       - name: Audit production and fuzz dependencies
         run: |
           cargo install cargo-audit --version 0.22.2 --locked

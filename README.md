@@ -6,6 +6,11 @@ It is a testing tool, not hardware-backed key protection or a manufacturer-attes
 YubiKey. See the [full plan](firefox-virtual-fido2-plan.md) and
 [implementation ledger](docs/implementation-status.md).
 
+**Install on Ubuntu 24.04 amd64:** download the `.deb` from
+[GitHub Releases](https://github.com/emsi/YubiQuity/releases/latest), then follow
+the [short installation guide](docs/install.md). It includes the GUI, backend and
+device setup; no development toolchain or separate browser download is needed.
+
 For a hands-on test with your own browser, follow the
 [end-to-end Linux host walkthrough](docs/host-testing.md). It covers host device
 permissions, a private test vault, PIN setup, both public demo sites, persistence,
