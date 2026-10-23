@@ -1,5 +1,12 @@
 # End-to-end testing on your Linux host
 
+**Installed the `.deb`?** Start with [the short installation guide](install.md).
+Version 0.2.0 provides guided setup in the existing GUI, including native
+administrator prompts, Firefox Snap diagnostics and PIN setup. The manual
+rule/group instructions below are for source installations and troubleshooting;
+the package already installs both udev rules.
+
+
 Run YubiQuity and your existing Firefox or Chrome **on the host**. This walkthrough
 uses a separate test vault and the graphical approval app. A terminal-only route
 is also described below. No browser changes, extensions, browser downloads,
@@ -38,7 +45,8 @@ install the packages in the next section once. For a build without a window:
 ./scripts/desktop.sh build
 ```
 
-Click **Unlock** in the app. Once ready it hides to the tray; browser requests
+On first run, follow **Setup and browser checks**, then click **Done**. On later
+unlocks it hides to the tray; browser requests
 open a separate **Approve / Cancel** window. Follow the workspace checks below.
 
 If something fails, this optional check reports the executable, **running
@@ -289,7 +297,10 @@ The list should include the YubiQuity device. Information should identify a FIDO
 authenticator with resident-key and ClientPIN support. Before changing anything,
 make sure the path is YubiQuity's, **not a physical security key**.
 
-Set a PIN once for this vault:
+GUI users can instead unlock the vault and choose **Setup and browser checks →
+Set security-key PIN**. This does not require `fido2-token` or a device path.
+
+For the terminal workflow, set a PIN once for this vault:
 
 ```bash
 fido2-token -S "$yubiquity_device"
@@ -343,7 +354,12 @@ not. Only if disconnected, grant the normal security-key interface:
 sudo snap connect firefox:u2f-devices
 ```
 
-If `CURRENT_TAGS` lacks `snap_firefox_firefox`, add the scoped authorization below.
+If `CURRENT_TAGS` lacks `snap_firefox_firefox`, packaged users should first use
+**Setup and browser checks → Enable Firefox Snap**, lock/unlock the vault and
+restart Firefox. The package already supplies the scoped rule in `/usr/lib`.
+The manual installation below is for source builds or an administrator reviewing
+a local override; do not add a duplicate `/etc` rule just because you installed
+the package.
 Fully quit Firefox, but keep YubiQuity running. Open a separate local rule file;
 if it already contains the rule from troubleshooting, keep it rather than adding
 a duplicate. Preserve any other existing contents:

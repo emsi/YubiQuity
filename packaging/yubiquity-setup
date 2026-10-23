@@ -1,37 +1,74 @@
 #!/bin/sh
-# Explicit, one-time administrator setup on the computer running the browser.
+# Small, root-owned installation helper. No vaults, secrets or user-supplied paths.
 set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 usage() {
     printf '%s\n' 'Usage: sudo yubiquity-setup USER' \
-        'Grants USER UHID access, loads UHID, refreshes device rules and connects' \
-        'Firefox Snap to security keys if that browser package is installed.'
+        'Or use Setup in YubiQuity for a native administrator prompt.'
 }
 case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 if [ "$#" -ne 1 ]; then usage >&2; exit 2; fi
 if [ "$(id -u)" -ne 0 ]; then
-    printf '%s\n' 'Run this setup command with sudo.' >&2
+    printf '%s\n' 'Administrator authentication is required.' >&2
     exit 1
 fi
-task_user=$1
+task_action=all
+case "$1" in
+    --desktop-device|--desktop-firefox)
+        task_action=${1#--desktop-}
+        case "${PKEXEC_UID:-}" in ''|*[!0-9]*) echo 'Missing pkexec caller identity.' >&2; exit 1 ;; esac
+        [ "$PKEXEC_UID" -gt 0 ] || { echo 'Use a normal desktop account.' >&2; exit 1; }
+        task_user=$(id -un -- "$PKEXEC_UID")
+        ;;
+    -*) usage >&2; exit 2 ;;
+    *) task_user=$1 ;;
+esac
 task_uid=$(id -u -- "$task_user")
 if [ "$task_uid" -eq 0 ]; then
     printf '%s\n' 'Specify your normal desktop account, not root.' >&2
     exit 1
 fi
-getent group yubiquity >/dev/null || groupadd --system yubiquity
-usermod -a -G yubiquity -- "$task_user"
-if [ ! -e /sys/class/misc/uhid ]; then
-    modprobe uhid
+if [ "$task_action" != all ] && [ "$task_uid" -ne "$PKEXEC_UID" ]; then
+    echo 'Caller identity does not match the account.' >&2
+    exit 1
 fi
+if [ "$task_action" != firefox ]; then
+    getent group yubiquity >/dev/null || groupadd --system yubiquity
+    usermod -a -G yubiquity -- "$task_user"
+    if [ ! -e /sys/class/misc/uhid ]; then modprobe uhid; fi
+fi
+# Reapply installed rules, preserving all locally customized files.
 udevadm control --reload-rules
-udevadm trigger --action=change /sys/class/misc/uhid
-udevadm settle
-if command -v snap >/dev/null 2>&1 && snap list firefox >/dev/null 2>&1; then
-    snap connect firefox:u2f-devices
+if [ "$task_action" != firefox ] || [ -e /sys/class/misc/uhid ]; then
+    udevadm trigger --action=change /sys/class/misc/uhid
 fi
-printf 'Device access configured for %s.\n' "$task_user"
-printf '%s\n' 'After first setup, save your work and reboot once to refresh desktop group membership.' \
-    'Then open YubiQuity from the application menu, as your normal user.'
+udevadm settle --timeout=15
+if [ "$task_action" = firefox ] && ! command -v snap >/dev/null 2>&1; then
+    echo 'Snap is not installed. No Firefox Snap connection can be configured.' >&2
+    exit 1
+fi
+if [ "$task_action" != device ] && command -v snap >/dev/null 2>&1; then
+    # A query failure is not proof that Firefox is absent. Bound an unavailable
+    # snapd and surface the error, including when device setup already succeeded.
+    task_snaps=$(timeout --kill-after=1s 15s snap list) || {
+        echo 'Could not query snapd. Device rules were refreshed; Firefox setup is unconfirmed. Try again.' >&2
+        exit 1
+    }
+    task_firefox=false
+    while read -r task_name task_rest; do
+        if [ "$task_name" = firefox ]; then task_firefox=true; fi
+    done <<SNAPS
+$task_snaps
+SNAPS
+    if [ "$task_firefox" = true ]; then
+        timeout --kill-after=1s 30s snap connect firefox:u2f-devices
+    elif [ "$task_action" = firefox ]; then
+        echo 'Firefox Snap is not installed.' >&2
+        exit 1
+    fi
+fi
+printf 'Setup completed for %s.\n' "$task_user"
+printf '%s\n' 'Use Check again in YubiQuity. If desktop groups are stale, save your work and reboot once.' \
+    'After Firefox repairs, lock/unlock YubiQuity and restart Firefox to recreate device access.'

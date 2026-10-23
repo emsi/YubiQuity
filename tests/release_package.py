@@ -63,11 +63,24 @@ class ReleasePackage(unittest.TestCase):
 
     def test_runtime_dependencies_resolve_without_a_toolchain(self):
         dependencies = run("dpkg-deb", "-f", str(PACKAGE), "Depends").stdout
-        for package in ("pinentry-qt", "qt6-qpa-plugins", "qt6-wayland", "fido2-tools", "udev", "kmod", "passwd"):
+        for package in ("pinentry-qt", "qt6-qpa-plugins", "qt6-wayland", "fido2-tools", "udev", "kmod", "passwd", "pkexec", "polkitd"):
             self.assertIn(package, dependencies)
         self.assertNotRegex(dependencies, r"\b(cargo|rustc|cmake|qt6-base-dev)\b")
         result = run("apt-get", "--simulate", "install", str(PACKAGE))
         self.assertIn("yubiquity", result.stdout)
+
+    def test_policy_and_installed_document_paths(self):
+        import xml.etree.ElementTree as ET
+        policy = ET.parse(self.root / "usr/share/polkit-1/actions/org.yubiquity.setup.policy")
+        action = policy.find("action")
+        self.assertEqual(action.findtext("defaults/allow_active"), "auth_admin")
+        self.assertEqual(action.findtext("defaults/allow_any"), "no")
+        self.assertEqual(action.findtext("defaults/allow_inactive"), "no")
+        self.assertEqual(action.find("annotate").text, "/usr/sbin/yubiquity-setup")
+        doc = self.root / "usr/share/doc/yubiquity"
+        self.assertTrue((doc / "docs/install.md").is_file())
+        self.assertTrue((doc / "docs/host-testing.md").is_file())
+        self.assertTrue((doc / "docs/test-report.md").is_file())
 
     def test_desktop_rules_and_script_syntax(self):
         run("desktop-file-validate", str(self.root / "usr/share/applications/org.yubiquity.Desktop.desktop"))
@@ -100,6 +113,7 @@ class ReleasePackage(unittest.TestCase):
             path.chmod(0o755)
 
         tool("id", '''if [ "$#" -eq 1 ]; then echo 0
+elif [ "$1" = -un ] && [ "$3" = 1000 ]; then echo tester
 elif [ "$3" = tester ]; then echo 1000
 elif [ "$3" = root ]; then echo 0
 else exit 1; fi''')
@@ -107,7 +121,11 @@ else exit 1; fi''')
         tool("groupadd", 'echo "groupadd $*" >> /calls; : > /group-created')
         for name in ("usermod", "modprobe", "udevadm"):
             tool(name, f'echo "{name} $*" >> /calls')
-        tool("snap", '''if [ "$1" = list ]; then [ -f /firefox-installed ]
+        tool("timeout", 'shift; shift; exec "$@"')
+        tool("snap", '''if [ "$1" = list ]; then
+[ ! -f /snap-query-fails ] || exit 1
+echo 'Name Version'
+if [ -f /firefox-installed ]; then echo 'firefox 154'; fi
 else echo "snap $*" >> /calls; fi''')
         for source, name in ((self.root / "DEBIAN/postinst", "postinst"),
                              (self.root / "DEBIAN/postrm", "postrm"),
@@ -133,6 +151,31 @@ else echo "snap $*" >> /calls; fi''')
                                          capture_output=True, text=True, timeout=10)
                 self.assertNotEqual(failure.returncode, 0)
                 self.assertEqual((jail / "calls").read_text(), calls)
+            # GUI repair always acts on the authenticated caller, never a supplied
+            # username, and query failures must not masquerade as no Firefox.
+            for identity in ("", "0", "bogus"):
+                failure = subprocess.run(["sudo", "-n", "chroot", str(jail), "/bin/sh", "-c",
+                                          f"PKEXEC_UID={identity} /bin/sh /setup --desktop-device"],
+                                         capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(failure.returncode, 0)
+                self.assertEqual((jail / "calls").read_text(), calls)
+            run("sudo", "-n", "chroot", str(jail), "/bin/sh", "-c",
+                "PKEXEC_UID=1000 /bin/sh /setup --desktop-device")
+            self.assertEqual((jail / "calls").read_text().count("usermod -a -G yubiquity -- tester"), 3)
+            (jail / "snap-query-fails").touch()
+            failure = subprocess.run(["sudo", "-n", "chroot", str(jail), "/bin/sh", "-c",
+                                      "PKEXEC_UID=1000 /bin/sh /setup --desktop-firefox"],
+                                     capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(failure.returncode, 0)
+            self.assertIn("Could not query snapd", failure.stderr)
+            # Firefox-only repair must never change account membership.
+            self.assertEqual((jail / "calls").read_text().count("usermod"), 3)
+            (jail / "usr/bin/snap").unlink()
+            failure = subprocess.run(["sudo", "-n", "chroot", str(jail), "/bin/sh", "-c",
+                                      "PKEXEC_UID=1000 /bin/sh /setup --desktop-firefox"],
+                                     capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(failure.returncode, 0)
+            self.assertIn("Snap is not installed", failure.stderr)
             run("sudo", "-n", "chroot", str(jail), "/bin/sh", "/postrm", "purge")
         self.assertTrue((jail / "group-created").exists())
         self.assertEqual((jail / "vault.yq").read_bytes(), b"untouched test sentinel")

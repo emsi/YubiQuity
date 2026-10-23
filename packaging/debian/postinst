@@ -10,5 +10,5 @@ if [ "$1" = configure ]; then
         udevadm control --reload-rules || true
         udevadm trigger --action=change --subsystem-match=misc --sysname-match=uhid || true
     fi
-    printf '%s\n' 'YubiQuity installed. First-time device setup: sudo yubiquity-setup "$USER"'
+    printf '%s\n' 'YubiQuity installed. Open YubiQuity from your application menu for guided device and browser setup.'
 fi

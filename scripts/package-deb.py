@@ -72,6 +72,7 @@ def main():
             install(source, target, 0o755)
             subprocess.run(["strip", "--strip-unneeded", str(target)], check=True)
         install(ROOT / "packaging/yubiquity-setup", tree / "usr/sbin/yubiquity-setup", 0o755)
+        install(ROOT / "packaging/polkit/org.yubiquity.setup.policy", tree / "usr/share/polkit-1/actions/org.yubiquity.setup.policy")
         install(ROOT / "desktop/org.yubiquity.Desktop.desktop", tree / "usr/share/applications/org.yubiquity.Desktop.desktop")
         for rule in (ROOT / "packaging/udev").glob("*.rules"):
             install(rule, tree / "usr/lib/udev/rules.d" / rule.name)
@@ -79,8 +80,8 @@ def main():
         for script in ("postinst", "postrm"):
             install(ROOT / "packaging/debian" / script, control / script, 0o755)
         doc = tree / "usr/share/doc/yubiquity"
-        for name in ("README.md", "docs/install.md", "docs/vault.md", "docs/host-testing.md"):
-            install(ROOT / name, doc / Path(name).name)
+        for path in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md")), *sorted(ROOT.glob("firefox-*.md"))]:
+            install(path, doc / path.relative_to(ROOT))
         notices(doc / "third-party")
         (doc / "copyright").write_text(
             "YubiQuity — https://github.com/emsi/YubiQuity\n"
@@ -97,7 +98,7 @@ def main():
                               "-e" + str(tree / "usr/bin/yubiquity-desktop"), cwd=work)
         dependencies = next(line.removeprefix("shlibs:Depends=") for line in dependencies.splitlines()
                             if line.startswith("shlibs:Depends="))
-        dependencies += ", pinentry-qt, qt6-qpa-plugins, qt6-wayland, fido2-tools, udev, kmod, passwd"
+        dependencies += ", pinentry-qt, qt6-qpa-plugins, qt6-wayland, fido2-tools, udev, kmod, passwd, pkexec, polkitd"
         size = sum(p.stat().st_size for p in (tree / "usr").rglob("*") if p.is_file())
         (control / "control").write_text(
             f"Package: yubiquity\nVersion: {version}-1\nArchitecture: amd64\n"

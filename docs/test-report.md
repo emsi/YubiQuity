@@ -708,3 +708,35 @@ ephemeral. Encrypted files can still be rolled back by a privileged/local attack
 There is no supported backup/export or recovery workflow. Keep accounts disposable:
 the intended product is a software testing authenticator, not a production
 hardware-key replacement. Details: [vault design](vault.md).
+
+## Guided onboarding validation — 2026-10-23
+
+Version 0.2.0 adds a setup page to the existing Qt application. Device/group
+checks distinguish the current process from saved account membership. Firefox
+Snap checks use the interface connection and the temporary device's CURRENT_TAGS;
+unknown queries remain unknown. Flatpak browser discovery is informational only.
+The installed root-owned helper offers separate device and Firefox actions via
+polkit; the GUI never elevates itself or supplies vault paths/secrets to it.
+
+Validation in the development container:
+
+- 82 Rust tests, production and fuzz formatting/clippy checks passed.
+- 12 live UHID control/PIN tests passed, including desktop PIN creation/change,
+  repeated incorrect PINs, rejection while a browser approval is pending, CTAP
+  interoperability, and persistence after lock/reopen.
+- Qt controller tests and real pinentry-qt accept/create/cancel tests passed on
+  private Xvfb. A new full GUI → secret descriptor → Rust control → same-user
+  socket fixture test verifies PIN setup. The setup screen was visually reviewed.
+- Private KWin X11 and native Wayland tray/workspace suites passed. Setup remains
+  visible while in use; finishing returns to normal hide-to-tray behavior.
+- The 0.2.0 `.deb` was built and passed five package tests: binary versions and
+  checksums, runtime dependency resolution, desktop/udev syntax, polkit policy
+  and installed documentation paths, and setup/maintainer scripts in a disposable
+  chroot with simulated system tools. These cover invalid pkexec identities,
+  caller-scoped group changes, Firefox-only repair and failed Snap queries.
+
+No host access was used. The native administrator authentication dialog and
+actual Firefox Snap repair still need a user test on the host; isolated package
+checks do not establish those desktop/system integrations. Browser verification
+in the onboarding UI is an explicit user-driven registration and login at
+webauthn.io, not an automated compatibility claim or a new public-site test run.

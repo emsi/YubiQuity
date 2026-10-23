@@ -16,10 +16,13 @@ For a hands-on test with your own browser, follow the
 permissions, a private test vault, PIN setup, both public demo sites, persistence,
 and Firefox/Chrome credential reuse without browser modifications.
 
-**Using Ubuntu's Firefox Snap?** Follow the additional
-[Snap device-access requirements](docs/host-testing.md#ubuntu-firefox-installed-as-a-snap):
-the connected `u2f-devices` interface alone may not authorize a virtual UHID key.
-The guide includes the scoped host rule, verification, and browser restart step.
+**First run (0.2.0):** the existing GUI opens **Setup and browser checks**.
+It checks device access and Firefox Snap, offers administrator-authenticated
+repairs, lets you set the security-key PIN, and guides a browser test. The
+package already includes both udev rules; packaged users should not copy them
+into `/etc` again. See [installation and onboarding](docs/install.md).
+The [Snap troubleshooting guide](docs/host-testing.md#ubuntu-firefox-installed-as-a-snap)
+remains available for source installations or customized systems.
 
 Already have a vault? Use `yubiquity run --vault PATH`; it checks basic
 prerequisites before asking for your passphrase and waits for native hidraw
@@ -78,7 +81,8 @@ The optional Qt 6 desktop application replaces typed approval tokens with a
 native **Approve / Cancel** dialog showing the operation, site (RP ID), and
 available account. Browser security-key PIN prompts remain unchanged. Vault
 passphrases use `pinentry-qt`; they are not stored in settings or passed in
-command-line arguments. Settings remember only the selected vault path.
+command-line arguments. Settings remember the selected vault path and whether you dismissed onboarding;
+no passphrase or PIN is stored in settings.
 
 Vaults have no fixed credential-count cap; the serialized plaintext budget is
 1 MiB. See [vault capacity, copying and secret storage](docs/vault.md) for the
@@ -103,13 +107,16 @@ to exit an older GUI before launching a rebuilt version. Launch as your normal
 desktop user, never with `sudo`. The launcher reports an already-running GUI and
 stops; it does not silently activate an older process after rebuilding. The app
 owns a locked service, offers Unlock, and attaches the key only after unlock.
-Once ready, the main window hides to the
-tray automatically. Open/create another vault from the main window. **Hide to
+After finishing onboarding, the main window hides to the
+tray automatically when ready. Setup remains visible while you work through it. Open/create another vault from the main window. **Hide to
 tray** and closing the main window keep the app running when a tray is available;
 **Lock and quit** always exits. Without a tray, the window stays visible after
 unlock, and closing locks and exits. No autostart or password caching is enabled.
-Device permissions and Firefox Snap
-requirements in the host guide still apply; the GUI does not change them.
+Return to **Setup and browser checks** for diagnostics, PIN changes or repairs.
+Repairs use the root-owned helper installed by the `.deb`, through the desktop
+polkit agent. The application and vault service remain unprivileged. Source
+builds without that installed helper offer the same diagnostics and PIN controls,
+and explain how to install the host integration.
 
 Approvals are independent windows, so the hidden vault window does not tie them
 to its workspace. Clicking the tray icon recalls the pending approval, or opens
@@ -230,6 +237,10 @@ switch for persistent operation.
 Before testing PIN-required passkeys, configure the authenticator PIN once while
 the vault is unlocked and attached. In another terminal, substitute the exact
 current hidraw path reported for this YubiQuity device (not a physical key):
+
+In the GUI, unlock the vault and use **Setup and browser checks → Set security-key
+PIN** (or **Change security-key PIN**). No device path is needed. These CLI commands
+remain available for explicit terminal use:
 
 ```bash
 fido2-token -S /dev/hidrawN

@@ -105,7 +105,9 @@ def main():
             env.pop("DBUS_SESSION_BUS_ADDRESS", None)
             subprocess.run([str(DESKTOP / "desktop-tests"), "nativeApprovalPreview"],
                            env=env, check=True, timeout=10)
-            for test in ("nativePinentryAccept", "nativePinentryCreate", "nativePinentryCancel"):
+            subprocess.run([str(DESKTOP / "desktop-tests"), "nativeSetupPreview"],
+                           env=env, check=True, timeout=10)
+            for test in ("nativePinentryAccept", "nativePinentryCreate", "nativePinentryCancel", "nativeWindowPinSetup"):
                 case = subprocess.Popen([str(DESKTOP / "desktop-tests"), test],
                                         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
                 try:
@@ -132,7 +134,7 @@ def main():
                         keys("key", "Escape")
                     else:
                         keys("type", "--clearmodifiers", "--delay", "5", "disposable%test+passphrase")
-                        if test == "nativePinentryCreate":
+                        if test in ("nativePinentryCreate", "nativeWindowPinSetup"):
                             keys("key", "Tab")
                             keys("type", "--clearmodifiers", "--delay", "5", "disposable%test+passphrase")
                         keys("key", "Return")
