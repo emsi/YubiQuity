@@ -36,6 +36,8 @@ int main(int argc, char **argv) {
        {"backend", "Path to the matching yubiquity CLI", "executable"},
        {"socket", "Attach to an existing local service instead of owning one",
         "path"},
+       {"require-new-instance",
+        "Fail instead of activating an already-running desktop app"},
        {"node-helper", "Explicit container-only helper for the owned service",
         "path"}});
   parser.process(app);
@@ -47,6 +49,13 @@ int main(int argc, char **argv) {
     return 1;
   }
   if (!bus.registerService("org.yubiquity.Desktop")) {
+    if (parser.isSet("require-new-instance")) {
+      fputs("YubiQuity Desktop is already running. Choose 'Lock and quit' in "
+            "that app, then run this command again. Rebuilding does not update "
+            "an already-running process.\n",
+            stderr);
+      return 1;
+    }
     QDBusInterface existing("org.yubiquity.Desktop", "/Desktop",
                             "org.yubiquity.Desktop", bus);
     const auto reply = existing.call("Show");

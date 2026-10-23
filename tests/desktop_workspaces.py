@@ -275,7 +275,7 @@ def run(platform, artifacts):
         script("workspace.desktops = 2; workspace.currentDesktop = 1;")
         service = Service(root / "control.sock")
         stack.callback(service.close)
-        app = spawn([str(ROOT / "target/desktop/yubiquity-desktop"), "--backend", str(ROOT / "target/debug/yubiquity"),
+        app = spawn([str(ROOT / "target/host-desktop/yubiquity-desktop"), "--backend", str(ROOT / "target/host/release/yubiquity"),
                      "--socket", str(root / "control.sock")], "app")
         def windows(title):
             value = script("")

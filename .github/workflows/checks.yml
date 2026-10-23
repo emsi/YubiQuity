@@ -24,16 +24,16 @@ jobs:
           rustup show active-toolchain
       - name: Format, lint and test
         run: |
-          bash -n scripts/install-dev-tools.sh scripts/install-firefox-esr.sh
+          bash -n scripts/install-dev-tools.sh scripts/install-firefox-esr.sh scripts/desktop.sh
+          /usr/bin/python3 tests/desktop_launcher.py
           cargo fmt --all -- --check
           cargo fmt --manifest-path fuzz/Cargo.toml -- --check
           cargo clippy --all-targets --locked -- -D warnings
           cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
           cargo test --all-targets --locked
           cargo build --locked
-          cmake -S desktop -B target/desktop -DCMAKE_BUILD_TYPE=Debug
-          cmake --build target/desktop -j2
-          YUBIQUITY_TEST_BACKEND="$PWD/target/debug/yubiquity" ctest --test-dir target/desktop --output-on-failure
+          scripts/desktop.sh build
+          YUBIQUITY_TEST_BACKEND="$PWD/target/host/release/yubiquity" ctest --test-dir target/host-desktop --output-on-failure
           /usr/bin/python3 tests/desktop_native.py
           /usr/bin/python3 tests/desktop_workspaces.py
           desktop-file-validate desktop/org.yubiquity.Desktop.desktop
