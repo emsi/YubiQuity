@@ -26,7 +26,7 @@ credential-count cap. Serialized plaintext remains limited to 1 MiB, so capacity
 depends on record sizes. IDs are 32 bytes, RP IDs at most 253 bytes, user handles
 at most 64 bytes, and account metadata at most 64 UTF-8 bytes per field. The versioned payload
 rejects unknown fields/policies, invalid keys, duplicate IDs/resident identities,
-unsupported algorithms and impossible retry counts.
+unsupported algorithms and malformed legacy retry fields.
 
 A registration that would exceed the size budget returns CTAP `KEY_STORE_FULL`
 before any file is written. Existing credentials remain usable and can be deleted
@@ -51,13 +51,36 @@ cargo build --release --locked
 /usr/bin/python3 scripts/benchmark-vault.py
 ```
 
+## PIN and passphrase attempts
+
+There are no attempt limits, cooldowns, temporary blocks, persistent blocks or
+automatic erasure after incorrect PINs, PIN-token authentication, or vault
+passphrases. A wrong input rejects only that request; the correct input can be
+used on the next attempt. Passphrase derivation still performs the same Argon2id
+work on each attempt, with no increasing delay or failure counter.
+
+ClientPIN protocol 1 has no value for unlimited attempts. `getRetries` therefore
+always reports the normal full value of eight, without decrementing or enforcing
+it. A browser may display that value, and can cancel or time out its own request;
+YubiQuity does not lock out the PIN. This is an intentional departure from the
+[CTAP2.0 retry/blocking requirements](https://fidoalliance.org/specs/fido-v2.0-ps-20190130/fido-client-to-authenticator-protocol-v2.0-ps-20190130.html#client-pin-support-requirements),
+not a claim of conformance to those requirements or hardware rate limiting.
+Wrong PINs still rotate the transient ECDH key; PIN changes and locking still
+invalidate PIN tokens. Explicit per-request approval and PIN verification remain.
+
+The v1 payload retains its legacy `pin.retries` field (0–8) for file compatibility.
+Its value is ignored for authentication, including zero in a previously blocked
+vault. No reset or file migration is necessary. New PIN setup/change writes eight
+in that legacy field. Use the updated binary on every computer: an older binary
+still enforces its original lockout policy.
+
 ## On-disk envelope
 
 All integer fields below are unsigned little-endian. The header is exactly 68
 bytes; the following ciphertext includes the 16-byte Poly1305 authentication tag.
 The plaintext JSON contains `{version: 1, state: ...}` with credentials and PIN
-hash/retry state. ECDH secrets, PIN tokens, temporary blocking and enumeration
-state are never persisted.
+hash and legacy retry metadata. ECDH secrets, PIN tokens and enumeration state
+are never persisted. No active attempt counter exists.
 
 | Offset | Length | Value |
 |---|---|---|
@@ -117,9 +140,8 @@ Each mutation follows this order:
 5. Atomically rename it over the selected vault; initialization uses no-replace.
 6. Sync the containing directory, then publish the new in-memory state/respond.
 
-PIN retry decrements are committed before checking an attempted PIN; success
-resets retries through the same commit path before issuing a token. Registration
-is committed before returning success. If a storage write fails, the encryption key
+PIN verification does not write the vault. PIN setup/change and registration
+are committed before returning success. If a storage write fails, the encryption key
 is cleared, subsequent credential commands are rejected, and the service detaches
 and exits nonzero. The user must reopen the vault to determine the stored state.
 In particular, rename followed by directory-sync failure has uncertain durability:
@@ -136,10 +158,9 @@ boundaries, and use a real file-size resource limit to force `EFBIG` in the daem
 
 The vault data file stays encrypted while unlocked. Opening/unlocking, sitting
 idle, and locking do not rewrite its contents. The separate local lock file may
-be created on open. Registration, deletion, reset, PIN setup/change and persistent
-PIN retry updates do rewrite the data file. A successful PIN check normally
-commits both the retry decrement and reset; an assertion using an existing PIN
-token does not itself write, and signature counters remain zero.
+be created on open. Registration, deletion, reset and PIN setup/change rewrite
+the data file. Correct or incorrect PIN verification and passphrase attempts do
+not rewrite it. Assertions do not themselves write; signature counters remain zero.
 
 Locking the **source** is not required for a normal local file copy that opens
 the source once and reads that same descriptor to completion. Atomic replacement
@@ -166,7 +187,7 @@ The derived 32-byte encryption key and decrypted credential private keys remain
 in the Rust daemon's memory while unlocked. The derived encryption key is not
 stored on disk; it is rederived from the passphrase and the public salt/KDF
 parameters in the vault header. Credential private keys and the security-key PIN
-verifier/retry state are encrypted inside the file. Locking or exiting drops
+verifier and legacy retry metadata are encrypted inside the file. Locking or exiting drops
 the loaded state and clears sensitive buffers where practical. Memory is not
 locked against swapping, and this is not a guarantee that every transient copy
 has been erased.
@@ -188,7 +209,7 @@ vault passphrase means losing access. Keep tests disposable.
 
 This design trusts the browser, daemon, local user account, OS and filesystem.
 It does not prevent a compromised user/root/kernel from reading an unlocked key,
-replacing files or rolling back a saved vault, including PIN retry state. It is
+replacing files or rolling back saved credentials and PIN changes. It is
 not rollback-resistant hardware storage. Signature counters remain zero and
 backup eligibility/state flags remain zero. None of these flags proves hardware
 protection.

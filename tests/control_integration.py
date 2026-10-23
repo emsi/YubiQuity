@@ -131,8 +131,11 @@ class ControlTests(unittest.TestCase):
         with service(self.vault, self.socket) as running, deadline(35):
             self.assertEqual(ctl(self.socket, "status"), {"ok": True, "state": "locked"})
             self.assertFalse(select.select([running.process.stdout], [], [], 0.1)[0])
-            self.assertFalse(ctl(self.socket, "unlock", passphrase=b"incorrect test passphrase", check=False)["ok"])
-            self.assertEqual(ctl(self.socket, "status")["state"], "locked")
+            original = self.vault.read_bytes()
+            for _ in range(16):
+                self.assertFalse(ctl(self.socket, "unlock", passphrase=b"incorrect test passphrase", check=False)["ok"])
+                self.assertEqual(ctl(self.socket, "status")["state"], "locked")
+                self.assertEqual(self.vault.read_bytes(), original)
             path = running.unlock()
             with open_device(path) as device:
                 ctap = Ctap2(device)

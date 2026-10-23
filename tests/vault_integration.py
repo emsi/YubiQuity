@@ -118,46 +118,44 @@ class VaultTests(unittest.TestCase):
         with daemon("run", vault=self.path, passphrase=PASSWORD) as (_, path, _), deadline(10), open_device(path) as device:
             self.error(CtapError.ERR.NO_CREDENTIALS, lambda: Ctap2(device).get_assertion("example.test", os.urandom(32), allow(credential), options={"up": False}))
 
-    def test_pin_retries_and_keys_survive_sigkill_and_block_across_restarts(self):
-        with daemon("run", vault=self.path, passphrase=PASSWORD) as (process, path, unique), deadline(15), open_device(path) as device:
+    def test_unlimited_pin_attempts_preserve_keys_across_sigkill_and_restarts(self):
+        with daemon("run", vault=self.path, passphrase=PASSWORD) as (process, path, unique), deadline(20), open_device(path) as device:
             ctap = Ctap2(device)
             credential = approved(process, lambda: register(ctap, resident=True)).auth_data.credential_data
             pin = ClientPin(ctap)
             pin.set_pin("1234")
+            original = self.path.read_bytes()
+            inode = self.path.stat().st_ino
             old_token = pin.get_pin_token("1234")
-            for code in [CtapError.ERR.PIN_INVALID, CtapError.ERR.PIN_INVALID, CtapError.ERR.PIN_AUTH_BLOCKED]:
-                self.error(code, lambda: pin.get_pin_token("wrong"))
-            self.assertEqual(pin.get_pin_retries()[0], 5)
+            for _ in range(16):
+                self.error(CtapError.ERR.PIN_INVALID, lambda: pin.get_pin_token("wrong"))
+            self.assertEqual(pin.get_pin_retries()[0], 8)
+            self.assertEqual(len(pin.get_pin_token("1234")), 32)
+            self.assertEqual(self.path.read_bytes(), original)
+            self.assertEqual(self.path.stat().st_ino, inode)
             process.kill()
             process.wait(timeout=5)
             wait_removed(path, unique)
-        with daemon("run", vault=self.path, passphrase=PASSWORD) as (process, path, _), deadline(15), open_device(path) as device:
+        for _ in range(2):
+            with daemon("run", vault=self.path, passphrase=PASSWORD) as (process, path, _), deadline(20), open_device(path) as device:
+                ctap = Ctap2(device)
+                pin = ClientPin(ctap)
+                self.assertEqual(pin.get_pin_retries()[0], 8)
+                digest = os.urandom(32)
+                for _ in range(16):
+                    self.error(CtapError.ERR.PIN_AUTH_INVALID, lambda: ctap.get_assertion("example.test", digest, allow(credential), pin_uv_protocol=1, pin_uv_param=pin.protocol.authenticate(old_token, digest)))
+                    self.error(CtapError.ERR.PIN_INVALID, lambda: pin.get_pin_token("wrong"))
+                new_token = pin.get_pin_token("1234")
+                self.assertNotEqual(old_token, new_token)
+                assertion = approved(process, lambda: ctap.get_assertion("example.test", digest, allow(credential), pin_uv_protocol=1, pin_uv_param=pin.protocol.authenticate(new_token, digest)))
+                self.assertEqual(assertion.auth_data.flags, 5)
+                credential.public_key.verify(assertion.auth_data + digest, assertion.signature)
+                self.assertEqual(self.path.read_bytes(), original)
+                self.assertEqual(self.path.stat().st_ino, inode)
+        self.assertEqual(json.loads(cli("list", self.path).stdout)["credentials"][0]["credential_id"], credential.credential_id.hex())
+        # Only an explicit, approved reset removes these credentials and the PIN.
+        with daemon("run", vault=self.path, passphrase=PASSWORD) as (process, path, _), deadline(10), open_device(path) as device:
             ctap = Ctap2(device)
-            pin = ClientPin(ctap)
-            self.assertEqual(pin.get_pin_retries()[0], 5)
-            digest = os.urandom(32)
-            self.error(CtapError.ERR.PIN_AUTH_INVALID, lambda: ctap.get_assertion("example.test", digest, allow(credential), pin_uv_protocol=1, pin_uv_param=pin.protocol.authenticate(old_token, digest)))
-            new_token = pin.get_pin_token("1234")
-            self.assertNotEqual(old_token, new_token)
-            self.assertEqual(pin.get_pin_retries()[0], 8)
-            assertion = approved(process, lambda: ctap.get_assertion("example.test", digest, allow(credential), pin_uv_protocol=1, pin_uv_param=pin.protocol.authenticate(new_token, digest)))
-            self.assertEqual(assertion.auth_data.flags, 5)
-            credential.public_key.verify(assertion.auth_data + digest, assertion.signature)
-        remaining = 8
-        for attempts in [3, 3, 2]:
-            with daemon("run", vault=self.path, passphrase=PASSWORD) as (_, path, _), deadline(15), open_device(path) as device:
-                pin = ClientPin(Ctap2(device))
-                self.assertEqual(pin.get_pin_retries()[0], remaining)
-                for attempt in range(attempts):
-                    remaining -= 1
-                    code = CtapError.ERR.PIN_BLOCKED if remaining == 0 else CtapError.ERR.PIN_AUTH_BLOCKED if attempt == 2 else CtapError.ERR.PIN_INVALID
-                    self.error(code, lambda: pin.get_pin_token("wrong"))
-                    self.assertEqual(pin.get_pin_retries()[0], remaining)
-        with daemon("run", vault=self.path, passphrase=PASSWORD) as (process, path, _), deadline(15), open_device(path) as device:
-            ctap = Ctap2(device)
-            pin = ClientPin(ctap)
-            self.assertEqual(pin.get_pin_retries()[0], 0)
-            self.error(CtapError.ERR.PIN_BLOCKED, lambda: pin.get_pin_token("1234"))
             approved(process, ctap.reset)
             self.assertFalse(ctap.get_info().options["clientPin"])
         self.assertEqual(json.loads(cli("list", self.path).stdout)["credentials"], [])
@@ -177,29 +175,34 @@ class VaultTests(unittest.TestCase):
         self.assertFalse(list(self.path.parent.glob(".yubiquity-write-*")))
         self.assertEqual(json.loads(cli("list", self.path).stdout)["credentials"], [])
 
-    def test_failed_retry_write_never_returns_a_pin_token(self):
+    def test_pin_verification_needs_no_write_but_pin_change_must_be_saved(self):
         with daemon("run", vault=self.path, passphrase=PASSWORD) as (_, path, _), deadline(10), open_device(path) as device:
             ClientPin(Ctap2(device)).set_pin("1234")
         original = self.path.read_bytes()
-        with daemon("run", vault=self.path, passphrase=PASSWORD, fail_writes=True) as (process, path, unique), deadline(10), open_device(path) as device:
+        with daemon("run", vault=self.path, passphrase=PASSWORD, fail_writes=True) as (process, path, unique), deadline(15), open_device(path) as device:
             pin = ClientPin(Ctap2(device))
+            for _ in range(16):
+                self.error(CtapError.ERR.PIN_INVALID, lambda: pin.get_pin_token("wrong"))
+            self.assertEqual(len(pin.get_pin_token("1234")), 32)
+            self.assertIsNone(process.poll())
             with self.assertRaises((CtapError, OSError)):
-                pin.get_pin_token("1234")
+                pin.change_pin("1234", "5678")
             self.assertNotEqual(process.wait(timeout=5), 0)
             wait_removed(path, unique)
         self.assertEqual(self.path.read_bytes(), original)
         with daemon("run", vault=self.path, passphrase=PASSWORD) as (_, path, _), deadline(10), open_device(path) as device:
             pin = ClientPin(Ctap2(device))
-            self.assertEqual(pin.get_pin_retries()[0], 8)
+            self.error(CtapError.ERR.PIN_INVALID, lambda: pin.get_pin_token("5678"))
             self.assertEqual(len(pin.get_pin_token("1234")), 32)
 
     def test_wrong_passphrase_corruption_and_initialization_do_not_overwrite(self):
         original = self.path.read_bytes()
-        for command, password in [("list", b"definitely wrong passphrase"), ("init", PASSWORD)]:
+        for command, password in [("list", b"definitely wrong passphrase")] * 16 + [("init", PASSWORD)]:
             failed = cli(command, self.path, passphrase=password, check=False)
             self.assertNotEqual(failed.returncode, 0)
             self.assertEqual(self.path.read_bytes(), original)
             self.assertNotIn(password.decode(), failed.stdout + failed.stderr)
+        self.assertEqual(json.loads(cli("list", self.path).stdout)["credentials"], [])
         corrupt = bytearray(original)
         corrupt[-1] ^= 1
         self.path.write_bytes(corrupt)

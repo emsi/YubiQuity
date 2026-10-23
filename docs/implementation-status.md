@@ -8,6 +8,15 @@ is used as a substitute for the full acceptance work.
 
 ## Current scope (2026-10-23)
 
+PIN policy follow-up: PIN, token-authentication and vault-passphrase failures
+never impose attempt limits, cooldowns, temporary/permanent blocks or erasure.
+The fixed ClientPIN retry response is eight; legacy saved retry counts are ignored,
+including zero. This explicitly supersedes the historical blocking/retry-durability
+results below. All 79 Rust tests, 19 relevant real-device integration tests,
+independent vault crypto, strict lint and the stock Firefox negative/recovery suite
+pass. See [attempt policy](vault.md#pin-and-passphrase-attempts) and
+[verification evidence](test-report.md#unlimited-pin-and-passphrase-attempts-2026-10-23).
+
 Vault capacity follow-up: the fixed 256-credential count limit is removed; the
 existing 1 MiB plaintext budget remains. Capacity rejection leaves the vault
 usable, while actual write failures still detach. New CTAP/persistence/copy tests,
@@ -115,7 +124,7 @@ were committed as `e562c25` and `1ad38b7`; the working tree was clean afterward.
 - [x] RP-bound allow-list assertions; silent up=false probes without fabricated presence.
 - [x] Discoverable credentials, multiple accounts, correct user handles and privacy (independent-client tests and selected Firefox/Chrome account selection).
 - [x] GetNextAssertion scope, sequencing, invalidation and expiry.
-- [x] ClientPIN protocol 1 setup/change/token/retry/temporary and permanent blocking, including persisted retries across crashes/restarts.
+- [x] ClientPIN protocol 1 setup/change/token with unlimited attempts; no PIN/token lockout, a fixed retry response, and acceptance of legacy zero-retry vaults.
 - [x] PIN-mediated UV, no advertised built-in UV; unsupported features not advertised.
 - [x] Explicit local approval bound to request; denied/expired/cancelled approval discarded (real 30-second expiry and stale-token recovery tested).
 - [x] Reset window and explicit presence; credential/PIN/transient state invalidation.
@@ -166,8 +175,8 @@ from 2026-10-22 is recorded in Current scope above.
 | §4.1: UHID descriptor/identity, lifecycle, report normalization, control replies | `src/uhid.rs`; real feature reports/PING/lifecycle; Firefox/Chrome attachment timing, crash/restart and removal during pending login | Host-managed node permissions remain unverified |
 | §4.2: INIT/PING/CBOR/CANCEL/KEEPALIVE/ERROR, bounded parsing/channels, busy/resync/timeouts, late-result rejection | `src/hid.rs`, `src/cbor.rs`, `src/service.rs`; boundary/malformed/state tests, four ASan targets, real competing-channel/expiry/cancellation and repeated malformed-input tests | Not a certification or exhaustive resource/security proof |
 | §§4.3–4.4: all six commands, keys/COSE/DER, RP binding, exclusion, residents, multiple accounts/privacy, durable registration | Credential/PIN suites, independent verification, Firefox/Chrome account selection, bidirectional reuse and full local negative cases | No identified baseline implementation gap; not certification |
-| §4.5: request-bound approval, silent probes, PIN setup/change/retries/blocking, UV, cancellation and lock | Unit/real-device suites, native Firefox/Chrome negative/recovery flows, PIN and account UI with RP-verified UV | Automated approvals do not prove real human presence |
-| §5: encrypted/versioned/bounded vault, fresh salt/nonces, atomic writes, locking/permissions, persistent retries, errors/secret lifetime | `src/vault.rs`, `src/secret_input.rs`, state Drop implementations; vault fault tests, real EFBIG/crash/restart, independent Argon2/libsodium check | Target-filesystem power-loss behavior is not established; root/same-user compromise and rollback remain explicitly outside the protection offered |
+| §4.5: request-bound approval, silent probes, PIN setup/change/unlimited attempts, UV, cancellation and lock | Unit/real-device suites, native Firefox/Chrome negative/recovery flows, PIN and account UI with RP-verified UV | Automated approvals do not prove real human presence |
+| §5: encrypted/versioned/bounded vault, fresh salt/nonces, atomic writes, locking/permissions, unlimited attempts, errors/secret lifetime | `src/vault.rs`, `src/secret_input.rs`, state Drop implementations; vault fault tests, real EFBIG/crash/restart, independent Argon2/libsodium check | Target-filesystem power-loss behavior is not established; root/same-user compromise and rollback remain explicitly outside the protection offered |
 | §§5–6: counter/backup flags, no export, ordinary CLI and explicit test backend | Source flag construction and CLI parsing; independent flags, exact deletion/reset, locked-service and persistent-browser tests | No missing export/sync/SSH feature: these are explicitly deferred, not release substitutes |
 | §6: user service and scoped device policy | Unit/rules/instructions exist; two strict offline packaging checks; normal unprivileged serve/control exercised with real HID | Actual systemd start/stop/restart and udev group/ACL application remain unverified; host execution is excluded |
 | §7: repository responsibility split | One Rust package with protocol/authenticator/crypto/PIN/vault/control/UHID modules and separate test/fuzz/packaging artifacts | No requirement for empty crates; the plan expressly permits finalized boundaries |

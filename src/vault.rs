@@ -376,7 +376,7 @@ impl Vault {
                 Ok(())
             }
             // Serialization checks capacity before creating a temporary file.
-            // A full vault must still allow signing, deletion and PIN retries.
+            // A full vault must still allow signing and deletion.
             Err(VaultError::Full) => Err(VaultError::Full),
             Err(error) => {
                 self.failed = true;

@@ -49,6 +49,8 @@ pub struct State {
 #[serde(deny_unknown_fields)]
 pub struct PinState {
     pub(crate) hash: [u8; 16],
+    /// Legacy v1 vault field, retained for file compatibility only. Never used
+    /// to limit attempts; even a saved zero must allow the correct PIN.
     pub retries: u8,
 }
 

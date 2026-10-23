@@ -236,6 +236,13 @@ These commands prompt for the PIN; do not put it in arguments. The PIN is separa
 from the vault passphrase and persists in the encrypted vault. See the
 [libfido2 command reference](https://developers.yubico.com/libfido2/Manuals/fido2-token.html).
 
+PIN and vault-passphrase attempts are unlimited: incorrect input rejects only
+that attempt, with no cooldown, temporary/permanent lockout, or automatic deletion.
+ClientPIN always reports eight retries for browser compatibility; this value never
+decreases and is not an enforced limit. This intentionally departs from CTAP's
+hardware-style PIN lockout policy. Existing vaults with zero saved retries work
+with the correct PIN after updating, without a reset. See [attempt policy](docs/vault.md#pin-and-passphrase-attempts).
+
 Stop the daemon before listing or deleting credentials; all commands take the
 same exclusive vault lock. Metadata is JSON, with account names hidden by default.
 
@@ -249,7 +256,7 @@ target/release/yubiquity delete --vault ./test-vault/credentials.yq --credential
 Explicit automation may supply a passphrase through an inherited descriptor
 `--passphrase-fd N` (N >= 3). No password argument, environment variable, or plaintext
 passphrase-file option is provided. See [vault format and operation](docs/vault.md)
-for filesystem requirements, retry durability, failure behavior and limitations.
+for filesystem requirements, attempt policy, failure behavior and limitations.
 
 ## Optional local service and approval client
 

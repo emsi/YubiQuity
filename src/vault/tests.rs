@@ -298,6 +298,28 @@ fn wrong_passphrase_and_authenticated_header_or_ciphertext_tampering_fail() {
 }
 
 #[test]
+fn repeated_wrong_passphrases_never_change_or_block_the_vault() {
+    let root = private_temp();
+    let path = root.path().join("vault.yq");
+    let mut vault = create(&path);
+    vault.commit(sample()).unwrap();
+    drop(vault);
+    let original = fs::read(&path).unwrap();
+    let inode = fs::metadata(&path).unwrap().ino();
+    for _ in 0..16 {
+        assert!(matches!(
+            Vault::open(&path, b"a wrong test passphrase"),
+            Err(VaultError::Authentication)
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+    }
+    let vault = Vault::open(&path, PASSWORD).unwrap();
+    assert_eq!(vault.state().credentials[0].private_key, [3; 32]);
+    assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
 fn invalid_version_lengths_and_kdf_are_rejected_before_derivation() {
     let valid = header(fast_kdf(), &[1; 16], &[2; 24], 64);
     let mut unsupported = valid;

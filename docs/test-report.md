@@ -12,6 +12,46 @@ The user subsequently recreated the container with the supplied seccomp policy.
 Chrome is now runnable and the positive interoperability scenarios below pass.
 Host deployment remains outside authorized execution scope and unverified.
 
+## Unlimited PIN and passphrase attempts (2026-10-23)
+
+At the user's request, removed temporary and permanent PIN lockouts, including
+blocking after invalid PIN-token MACs. Incorrect input now rejects only the
+current request, with no failed-attempt counter, cooldown or automatic erasure.
+ClientPIN always reports eight retries as a fixed compatibility response, not an
+enforced limit. This intentionally differs from CTAP's retry/blocking policy.
+The vault passphrase already had no attempt limits; that behavior now has repeated
+failure/recovery coverage through both CLI and the desktop service's control API.
+
+Existing v1 vaults retain their legacy retry field, but it is never used to decide
+whether a PIN is accepted. Tests reopen a real encrypted zero-retry fixture and
+use its existing credential without reset, migration or rewriting the file.
+PIN verification no longer writes the vault; setup/change still require a durable
+commit. Historical lockout and retry-write results below describe the old policy
+and are superseded by this section.
+
+Passing checks:
+
+- All 79 Rust tests, including 260 consecutive wrong PIN token requests and 260
+  wrong change-PIN requests before recovery, repeated across restart; 260 invalid
+  token MACs followed by a valid token; every legacy retry value from zero to eight;
+  and 16 incorrect passphrases followed by successful access with unchanged data.
+- Production and fuzz formatting and strict Clippy.
+- `scripts/desktop.sh build`: canonical release backend and desktop app built.
+- With `YUBIQUITY_TEST_BINARY="$PWD/target/host/release/yubiquity"`, all 19 real
+  UHID/hidraw PIN, vault and control integration cases pass (six PIN, eight vault,
+  five control). They check repeated bad PINs/MACs followed by valid signatures,
+  SIGKILL/restart, unchanged vault bytes/inode during verification, failed durable
+  PIN changes, and repeated bad passphrases followed by successful unlock.
+- Independent Argon2/libsodium vault format verification passes.
+- Stock Firefox 158.0.1 local negative/recovery suite passes with the rebuilt
+  release backend: normal registration/login, native wrong-PIN recovery with UV,
+  denial/cancellation and reuse after explicit lock/unlock. Artifacts:
+  `target/browser-results/negative-1792768081144734630/`.
+
+These runs use disposable vaults and an isolated browser display inside the
+container. They do not establish how every browser chooses to display retries or
+cancel its own dialog. No host session or user vault was accessed.
+
 ## Vault capacity and unlocked-copy verification (2026-10-23)
 
 Removed the fixed 256-credential limit from registration and vault validation.

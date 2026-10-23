@@ -296,6 +296,9 @@ fido2-token -S "$yubiquity_device"
 ```
 
 Choose a test PIN you will remember (for example, your own six or more digits).
+PIN and vault-passphrase attempts are unlimited; mistakes do not cause a cooldown,
+lockout or erasure. The PIN retry value reported to clients stays at eight and is
+not an enforced limit. See [attempt policy](vault.md#pin-and-passphrase-attempts).
 This PIN is **separate from the vault passphrase**. It is what you enter in the
 browser's security-key PIN dialog, and it persists across daemon restarts. Do not
 repeat `-S` on an already-configured vault; `-C` changes an existing PIN when
@@ -511,7 +514,7 @@ vault will not contain these test credentials.
 | `No pending request matches that approval token` | Enter `approve` followed by the actual complete token printed after `APPROVAL`, not the word `TOKEN`. If the request expired or was cancelled, retry on the site and use the new token. |
 | Vault path rejected | Its immediate directory must be yours and `0700`; user-owned `0775` ancestors are allowed. Inspect with `namei -l "$yubiquity_vault"` and check the remaining [vault requirements](vault.md). Do not recursively change home-directory permissions. |
 | Vault already locked | Another `run`, unlocked `serve`, or vault command is using it. Stop that instance; do not delete the lock file. |
-| PIN temporarily blocked | Stop and restart `run` to reattach, then use the correct PIN. Reattachment does not replenish the persistent retry budget; repeated wrong PINs can permanently block it. |
+| PIN blocked message | This release has no PIN lockouts. Check that you selected YubiQuity and have stopped any older daemon; rebuild/relaunch with `scripts/desktop.sh run`. Previously blocked vaults accept the correct PIN with the updated backend. Do not reset the vault. |
 | `GLIBC_... not found` | Build on the host using the separate `target/host` directory in step 1. |
 
 For a useful failure report, include the host distribution, browser version and

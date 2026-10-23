@@ -4,9 +4,11 @@ use ciborium::Value;
 use hmac::{Hmac, Mac};
 use p256::{ecdh::diffie_hellman, elliptic_curve::sec1::ToEncodedPoint, PublicKey, SecretKey};
 use sha2::{Digest, Sha256};
+use std::os::unix::fs::PermissionsExt;
 use yubiquity::authenticator::{Authenticator, CtapResult, Prompt, RequestContext, Status};
 use yubiquity::cbor::{self, bytes, get, int, map, text};
 use yubiquity::store::{MemoryStore, State, Store, StoreError};
+use yubiquity::vault::Vault;
 
 struct Consent;
 impl RequestContext for Consent {
@@ -117,6 +119,31 @@ impl Client {
             get(&result, &int(2)).unwrap().as_bytes().unwrap(),
         ))
     }
+    fn change<S: Store>(
+        &self,
+        auth: &mut Authenticator<S>,
+        current: &str,
+        new: &str,
+    ) -> Result<Value, u8> {
+        let mut plain = new.as_bytes().to_vec();
+        plain.resize(64, 0);
+        let encrypted = encrypt(&self.shared, &plain);
+        let hash = encrypt(&self.shared, &Sha256::digest(current.as_bytes())[..16]);
+        let mut message = encrypted.clone();
+        message.extend(&hash);
+        call(
+            auth,
+            6,
+            map([
+                (int(1), int(1)),
+                (int(2), int(4)),
+                (int(3), self.peer.clone()),
+                (int(4), bytes(&mac(&self.shared, &message))),
+                (int(5), bytes(&encrypted)),
+                (int(6), bytes(&hash)),
+            ]),
+        )
+    }
 }
 
 fn initialized() -> Authenticator<MemoryStore> {
@@ -139,58 +166,100 @@ fn pin_assertion<S: Store>(auth: &mut Authenticator<S>, token: &[u8]) -> Result<
 }
 
 #[test]
-fn restart_preserves_retries_and_clears_only_temporary_blocking() {
+fn wrong_pins_never_block_verification_or_change_even_across_restarts() {
     let mut auth = initialized();
-    for expected in [
-        Status::PinInvalid,
-        Status::PinInvalid,
-        Status::PinAuthBlocked,
-    ] {
+    for _ in 0..2 {
+        // Cross both old lockout thresholds and the former u8 counter range.
+        for _ in 0..260 {
+            let client = Client::new(&mut auth);
+            assert_eq!(
+                client.token(&mut auth, "wrong"),
+                Err(Status::PinInvalid as u8)
+            );
+            let client = Client::new(&mut auth);
+            assert_eq!(
+                client.change(&mut auth, "wrong", "5678"),
+                Err(Status::PinInvalid as u8)
+            );
+        }
+        let response = call(&mut auth, 6, map([(int(1), int(1)), (int(2), int(1))])).unwrap();
+        assert_eq!(get(&response, &int(3)), Some(&int(8)));
         let client = Client::new(&mut auth);
-        assert_eq!(client.token(&mut auth, "wrong"), Err(expected as u8));
+        assert_eq!(client.token(&mut auth, "1234").unwrap().len(), 32);
+        auth = Authenticator::software(MemoryStore::from(auth.state().clone()), 0);
     }
-    assert_eq!(auth.state().pin.as_ref().unwrap().retries, 5);
     let client = Client::new(&mut auth);
-    assert_eq!(
-        client.token(&mut auth, "1234"),
-        Err(Status::PinAuthBlocked as u8)
-    );
-    let mut reopened = Authenticator::software(MemoryStore::from(auth.state().clone()), 0);
-    assert_eq!(reopened.state().pin.as_ref().unwrap().retries, 5);
-    let client = Client::new(&mut reopened);
-    assert_eq!(client.token(&mut reopened, "1234").unwrap().len(), 32);
-    assert_eq!(reopened.state().pin.as_ref().unwrap().retries, 8);
+    client.change(&mut auth, "1234", "5678").unwrap();
+    assert_eq!(client.token(&mut auth, "5678").unwrap().len(), 32);
 }
 
 #[test]
-fn eight_bad_attempts_permanently_block_even_across_restarts() {
-    let mut auth = initialized();
-    for attempt in 1..=8 {
+fn legacy_retry_values_including_zero_cannot_block_the_pin() {
+    for retries in 0..=8 {
+        let mut state = initialized().state().clone();
+        state.pin.as_mut().unwrap().retries = retries;
+        let mut auth = Authenticator::software(MemoryStore::from(state), 0);
+        let response = call(&mut auth, 6, map([(int(1), int(1)), (int(2), int(1))])).unwrap();
+        assert_eq!(get(&response, &int(3)), Some(&int(8)));
         let client = Client::new(&mut auth);
-        let expected = if attempt == 8 {
-            Status::PinBlocked
-        } else if attempt % 3 == 0 {
-            Status::PinAuthBlocked
-        } else {
-            Status::PinInvalid
-        };
-        assert_eq!(client.token(&mut auth, "wrong"), Err(expected as u8));
-        assert_eq!(auth.state().pin.as_ref().unwrap().retries, 8 - attempt);
-        if attempt % 3 == 0 {
-            auth = Authenticator::software(MemoryStore::from(auth.state().clone()), 0);
-        }
+        let token = client.token(&mut auth, "1234").unwrap();
+        assert_eq!(
+            pin_assertion(&mut auth, &token),
+            Err(Status::NoCredentials as u8)
+        );
+        client.change(&mut auth, "1234", "5678").unwrap();
+        assert_eq!(client.token(&mut auth, "5678").unwrap().len(), 32);
     }
-    let mut reopened = Authenticator::software(MemoryStore::from(auth.state().clone()), 0);
-    let client = Client::new(&mut reopened);
-    assert_eq!(
-        client.token(&mut reopened, "1234"),
-        Err(Status::PinBlocked as u8)
-    );
-    assert_eq!(reopened.execute(1, &[7], &mut Consent), [0]);
-    assert!(reopened.state().pin.is_none());
-    Client::new(&mut reopened)
-        .set(&mut reopened, "1234")
+}
+
+#[test]
+fn a_previously_blocked_vault_reopens_without_reset_or_credential_loss() {
+    let mut auth = initialized();
+    let client = Client::new(&mut auth);
+    let token = client.token(&mut auth, "1234").unwrap();
+    call(
+        &mut auth,
+        1,
+        map([
+            (int(1), bytes(&[7; 32])),
+            (int(2), map([(text("id"), text("example.test"))])),
+            (int(3), map([(text("id"), bytes(b"alice"))])),
+            (
+                int(4),
+                Value::Array(vec![map([
+                    (text("type"), text("public-key")),
+                    (text("alg"), int(-7)),
+                ])]),
+            ),
+            (int(7), map([(text("rk"), Value::Bool(true))])),
+            (int(8), bytes(&mac(&token, &[7; 32]))),
+            (int(9), int(1)),
+        ]),
+    )
+    .unwrap();
+    let credential_id = auth.state().credentials[0].id.clone();
+    let mut legacy = auth.state().clone();
+    legacy.pin.as_mut().unwrap().retries = 0;
+    let directory = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
         .unwrap();
+    let path = directory.path().join("legacy.yq");
+    let password = b"disposable test passphrase";
+    let mut vault = Vault::create(&path, password).unwrap();
+    vault.commit(legacy).unwrap();
+    drop(vault);
+    let original = std::fs::read(&path).unwrap();
+    let vault = Vault::open(&path, password).unwrap();
+    let mut auth = Authenticator::software(vault, 0);
+    let client = Client::new(&mut auth);
+    let token = client.token(&mut auth, "1234").unwrap();
+    let assertion = pin_assertion(&mut auth, &token).unwrap();
+    assert_eq!(
+        get(get(&assertion, &int(1)).unwrap(), &text("id")),
+        Some(&bytes(&credential_id))
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
 }
 
 #[test]
@@ -240,23 +309,43 @@ impl Store for FailWrite {
 }
 
 #[test]
-fn retry_write_failure_never_issues_token_or_allows_further_operations() {
-    for fail_at in [1, 2] {
-        let state = initialized().state().clone();
+fn checking_pins_does_not_write_but_setting_or_changing_still_requires_durability() {
+    for configured in [false, true] {
+        let state = if configured {
+            initialized().state().clone()
+        } else {
+            State::default()
+        };
         let mut auth = Authenticator::software(
             FailWrite {
                 state,
                 calls: 0,
-                fail_at,
+                fail_at: 1,
             },
             0,
         );
-        let client = Client::new(&mut auth);
-        assert_eq!(client.token(&mut auth, "1234"), Err(Status::Other as u8));
-        assert_eq!(
-            auth.state().pin.as_ref().unwrap().retries,
-            if fail_at == 1 { 8 } else { 7 }
-        );
+        if configured {
+            for _ in 0..16 {
+                let client = Client::new(&mut auth);
+                assert_eq!(
+                    client.token(&mut auth, "wrong"),
+                    Err(Status::PinInvalid as u8)
+                );
+            }
+            let client = Client::new(&mut auth);
+            let token = client.token(&mut auth, "1234").unwrap();
+            assert_eq!(
+                pin_assertion(&mut auth, &token),
+                Err(Status::NoCredentials as u8)
+            );
+            assert_eq!(
+                client.change(&mut auth, "1234", "5678"),
+                Err(Status::Other as u8)
+            );
+        } else {
+            let client = Client::new(&mut auth);
+            assert_eq!(client.set(&mut auth, "1234"), Err(Status::Other as u8));
+        }
         // Fail closed even for a metadata read; don't keep using uncertain state.
         assert_eq!(auth.execute(1, &[4], &mut Consent), [Status::Other as u8]);
         assert_eq!(auth.execute(1, &[7], &mut Consent), [Status::Other as u8]);
@@ -264,27 +353,18 @@ fn retry_write_failure_never_issues_token_or_allows_further_operations() {
 }
 
 #[test]
-fn invalid_token_authentication_blocks_until_restart_but_not_permanently() {
+fn invalid_token_authentication_never_blocks_a_valid_token() {
     let mut auth = initialized();
     let client = Client::new(&mut auth);
     let token = client.token(&mut auth, "1234").unwrap();
-    for error in [
-        Status::PinAuthInvalid,
-        Status::PinAuthInvalid,
-        Status::PinAuthBlocked,
-    ] {
-        assert_eq!(pin_assertion(&mut auth, &[0; 32]), Err(error as u8));
+    for _ in 0..260 {
+        assert_eq!(
+            pin_assertion(&mut auth, &[0; 32]),
+            Err(Status::PinAuthInvalid as u8)
+        );
     }
     assert_eq!(
         pin_assertion(&mut auth, &token),
-        Err(Status::PinAuthBlocked as u8)
-    );
-    assert_eq!(auth.state().pin.as_ref().unwrap().retries, 8);
-    let mut reopened = Authenticator::software(MemoryStore::from(auth.state().clone()), 0);
-    let client = Client::new(&mut reopened);
-    let token = client.token(&mut reopened, "1234").unwrap();
-    assert_eq!(
-        pin_assertion(&mut reopened, &token),
         Err(Status::NoCredentials as u8)
     );
 }

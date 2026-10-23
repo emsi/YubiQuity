@@ -60,14 +60,15 @@ class PinTests(unittest.TestCase):
             self.assertEqual(silent.auth_data.flags, 0)
             self.assertEqual(silent.user, {"id": b"alice"})
 
-    def test_change_pin_invalidates_tokens_and_resets_retries(self):
+    def test_change_pin_invalidates_tokens_without_attempt_limits(self):
         with daemon("dev-run", "approve") as (_, path, _), deadline(15), open_device(path) as device:
             ctap = Ctap2(device)
             pin = ClientPin(ctap)
             pin.set_pin("1234")
             old = pin.get_pin_token("1234")
-            self.error(CtapError.ERR.PIN_INVALID, lambda: pin.change_pin("wrong", "5678"))
-            self.assertEqual(pin.get_pin_retries()[0], 7)
+            for _ in range(16):
+                self.error(CtapError.ERR.PIN_INVALID, lambda: pin.change_pin("wrong", "5678"))
+                self.assertEqual(pin.get_pin_retries()[0], 8)
             pin.change_pin("1234", "5678")
             self.assertEqual(pin.get_pin_retries()[0], 8)
             self.error(CtapError.ERR.PIN_AUTH_INVALID, lambda: self.make_uv(ctap, pin, old))
@@ -77,30 +78,31 @@ class PinTests(unittest.TestCase):
             self.assertEqual(pin.get_pin_retries()[0], 8)
             self.make_uv(ctap, pin, new)
 
-    def test_bad_pin_rekeys_and_three_attempts_block_until_restart(self):
+    def test_bad_pin_rekeys_without_ever_blocking_the_correct_pin(self):
         with daemon("dev-run", "approve") as (_, path, _), deadline(15), open_device(path) as device:
             ctap = Ctap2(device)
             pin = ClientPin(ctap)
             pin.set_pin("1234")
             previous = ctap.client_pin(1, 2)[1]
-            for attempt, error in enumerate([CtapError.ERR.PIN_INVALID, CtapError.ERR.PIN_INVALID, CtapError.ERR.PIN_AUTH_BLOCKED]):
-                self.error(error, lambda: pin.get_pin_token("wrong"))
-                self.assertEqual(pin.get_pin_retries()[0], 7 - attempt)
+            for _ in range(16):
+                self.error(CtapError.ERR.PIN_INVALID, lambda: pin.get_pin_token("wrong"))
+                self.assertEqual(pin.get_pin_retries()[0], 8)
                 current = ctap.client_pin(1, 2)[1]
                 self.assertNotEqual(previous, current)
                 previous = current
-            self.error(CtapError.ERR.PIN_AUTH_BLOCKED, lambda: pin.get_pin_token("1234"))
-            self.assertEqual(pin.get_pin_retries()[0], 5)
+            token = pin.get_pin_token("1234")
+            self.assertEqual(len(token), 32)
+            self.make_uv(ctap, pin, token)
 
-    def test_bad_token_mac_blocks_without_consuming_pin_retries(self):
+    def test_bad_token_mac_never_blocks_valid_authorization(self):
         with daemon("dev-run", "approve") as (_, path, _), deadline(15), open_device(path) as device:
             ctap = Ctap2(device)
             pin = ClientPin(ctap)
             pin.set_pin("1234")
             token = pin.get_pin_token("1234")
-            for error in [CtapError.ERR.PIN_AUTH_INVALID, CtapError.ERR.PIN_AUTH_INVALID, CtapError.ERR.PIN_AUTH_BLOCKED]:
-                self.error(error, lambda: self.make_uv(ctap, pin, b"\0" * 32))
-            self.error(CtapError.ERR.PIN_AUTH_BLOCKED, lambda: self.make_uv(ctap, pin, token))
+            for _ in range(16):
+                self.error(CtapError.ERR.PIN_AUTH_INVALID, lambda: self.make_uv(ctap, pin, b"\0" * 32))
+            self.make_uv(ctap, pin, token)
             self.assertEqual(pin.get_pin_retries()[0], 8)
             ctap.reset()
             self.assertFalse(ctap.get_info().options["clientPin"])

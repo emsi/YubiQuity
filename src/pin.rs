@@ -1,5 +1,6 @@
-//! CTAP2.0 ClientPIN protocol 1. PIN hashes/retries live in the encrypted store;
-//! ECDH secrets, tokens, and power-cycle blocking live only in this attachment.
+//! CTAP2.0 ClientPIN protocol 1 with deliberately unlimited attempts.
+//! PIN hashes live in the encrypted store; ECDH secrets and tokens live only in
+//! this attachment. Failed PINs or token MACs reject only the current request.
 use crate::authenticator::{
     as_bytes, as_integer, as_map, required, CtapResult, RequestContext, Status,
 };
@@ -15,32 +16,18 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
-const MAX_RETRIES: u8 = 8;
+// ClientPIN has no "unlimited" retry value. Always advertise its normal full
+// budget, without enforcing or persisting an attempt limit. This intentionally
+// differs from CTAP's lockout policy for this software authenticator.
+const REPORTED_RETRIES: u8 = 8;
 
 #[derive(Default)]
 pub struct PinRuntime {
     agreement: Option<SecretKey>,
     token: Option<Zeroizing<[u8; 32]>>,
-    pin_failures: u8,
-    auth_failures: u8,
 }
 
 impl PinRuntime {
-    fn blocked(&self) -> bool {
-        self.pin_failures >= 3 || self.auth_failures >= 3
-    }
-
-    fn check_available(&self, stored: Option<&PinState>) -> CtapResult<()> {
-        let stored = stored.ok_or(Status::PinNotSet)?;
-        if stored.retries == 0 {
-            return Err(Status::PinBlocked);
-        }
-        if self.blocked() {
-            return Err(Status::PinAuthBlocked);
-        }
-        Ok(())
-    }
-
     fn rekey(&mut self, random: &mut dyn RandomSource) -> CtapResult<()> {
         // Invalidate first: failed entropy must not preserve the old ECDH key.
         self.agreement = None;
@@ -124,14 +111,7 @@ impl PinRuntime {
         }
         self.ensure_secrets(random)?;
         match command {
-            1 => Ok(Some(map([(
-                int(3),
-                int(store
-                    .state()
-                    .pin
-                    .as_ref()
-                    .map_or(MAX_RETRIES, |p| p.retries) as i64),
-            )]))),
+            1 => Ok(Some(map([(int(3), int(REPORTED_RETRIES as i64))]))),
             2 => Ok(Some(map([(int(1), self.public_key()?)]))),
             3 => {
                 let peer = required(parameters, &int(3))?;
@@ -148,7 +128,7 @@ impl PinRuntime {
                 let mut next = store.state().clone();
                 next.pin = Some(PinState {
                     hash: *hash,
-                    retries: MAX_RETRIES,
+                    retries: REPORTED_RETRIES,
                 });
                 commit(store, next, context)?;
                 Ok(None)
@@ -167,41 +147,23 @@ impl PinRuntime {
                 } else {
                     None
                 };
-                self.check_available(store.state().pin.as_ref())?;
+                let stored = store.state().pin.as_ref().ok_or(Status::PinNotSet)?;
                 let shared = self.shared_secret(peer)?;
                 if let Some((auth, encrypted)) = change {
                     verify_mac(shared.as_ref(), &[encrypted, encrypted_hash], auth)?;
                 }
-                // Persist the decrement BEFORE comparing. Crash/write failure
-                // cannot give a free PIN guess. This applies to changePIN too.
-                let mut next = store.state().clone();
-                next.pin.as_mut().ok_or(Status::PinNotSet)?.retries -= 1;
-                commit(store, next, context)?;
                 let candidate = decrypt(&shared, encrypted_hash)?;
-                let stored = store.state().pin.as_ref().ok_or(Status::PinNotSet)?;
                 if !bool::from(candidate.as_slice().ct_eq(&stored.hash)) {
-                    self.pin_failures += 1;
-                    let retries = stored.retries;
                     self.rekey(random)?;
-                    return Err(if retries == 0 {
-                        Status::PinBlocked
-                    } else if self.blocked() {
-                        Status::PinAuthBlocked
-                    } else {
-                        Status::PinInvalid
-                    });
+                    return Err(Status::PinInvalid);
                 }
-                let mut next = store.state().clone();
-                next.pin.as_mut().ok_or(Status::PinNotSet)?.retries = MAX_RETRIES;
-                commit(store, next, context)?;
-                self.pin_failures = 0;
                 if let Some((_, encrypted)) = change {
                     let hash = new_pin_hash(&shared, encrypted)?;
                     self.renew_token(random)?;
                     let mut next = store.state().clone();
                     next.pin = Some(PinState {
                         hash: *hash,
-                        retries: MAX_RETRIES,
+                        retries: REPORTED_RETRIES,
                     });
                     commit(store, next, context)?;
                     Ok(None)
@@ -230,20 +192,14 @@ impl PinRuntime {
         if protocol != Some(1) || auth.len() != 16 {
             return Err(Status::PinAuthInvalid);
         }
-        self.check_available(stored)?;
+        stored.ok_or(Status::PinNotSet)?;
         let valid = self
             .token
             .as_ref()
             .is_some_and(|token| verify_mac(token.as_ref(), &[hash], auth).is_ok());
         if !valid {
-            self.auth_failures += 1;
-            return Err(if self.blocked() {
-                Status::PinAuthBlocked
-            } else {
-                Status::PinAuthInvalid
-            });
+            return Err(Status::PinAuthInvalid);
         }
-        self.auth_failures = 0;
         Ok(true)
     }
 }

@@ -35,7 +35,7 @@ Cloud sync, CTAP1/U2F, biometrics, enterprise attestation, additional signature 
 | Language | Rust; pin a compatible stable toolchain and dependency lockfile during setup |
 | Transport | Existing Linux `/dev/uhid`, producing a FIDO `/dev/hidrawN` device |
 | Execution | Unprivileged foreground daemon first; user service after end-to-end validation |
-| Protocol baseline | CTAP2.0 behavior with ClientPIN protocol 1; advertise only implemented capabilities |
+| Protocol baseline | CTAP2.0 commands with ClientPIN protocol 1; unlimited PIN attempts as explicitly requested; advertise only implemented capabilities |
 | Signing | Independent software P-256 key per credential, ES256 |
 | Attestation | `none` by default; packed self-attestation can be added for tests |
 | Presence | Terminal approval first, behind an interface that can later support a desktop dialog |
@@ -96,7 +96,7 @@ Keep transport errors separate from CTAP status codes. Cancellation completes th
 | `MakeCredential` | Validate input, enforce exclusion/policy, generate and persist a credential, return registration data |
 | `GetAssertion` | Resolve RP-scoped credentials with or without an allow list and return a valid signature |
 | `GetNextAssertion` | Return additional eligible accounts with correctly scoped, expiring enumeration state |
-| `ClientPIN` | Implement PIN setup/change, retries, key agreement, token issuance, and request authentication |
+| `ClientPIN` | Implement PIN setup/change, unlimited attempts with a fixed retry response, key agreement, token issuance, and request authentication |
 | `Reset` | Apply the protocol's reset window and explicit presence requirement; clear the selected authenticator's state |
 
 Return CTAP status bytes and CTAP CBOR response maps. Each browser constructs the WebAuthn objects exposed to JavaScript.
@@ -119,7 +119,7 @@ Firefox performs silent `GetAssertion` probes with `up=false` when filtering cre
 
 The approval prompt shows operation, RP ID, account when available, and an operation identifier. Approval applies only to that pending operation. Denial, timeout, cancellation, and daemon shutdown all invalidate the prompt. Treat device-selection requests separately from approval for a real registration or login.
 
-Implement ClientPIN using established crypto libraries, with protocol-specific request validation, persistent retry state, temporary blocking, and PIN-token invalidation. Test PIN changes and restart behavior. Set `UV` only when the request has satisfied the implemented verification protocol. A terminal click, an unlocked vault, and successful signing are not PIN verification.
+Implement ClientPIN using established crypto libraries, with protocol-specific request validation and PIN-token invalidation. PIN and vault-passphrase attempts must be unlimited: no failure counters, cooldowns, temporary/permanent blocks or automatic erasure. Wrong PINs and invalid token MACs reject only the current request. ClientPIN has no unlimited-attempt representation; always report eight retries without decrementing or enforcing a budget. This intentionally departs from CTAP2.0 retry/blocking requirements at the user's request. Accept existing vaults with zero legacy retries without reset or credential loss. Test repeated failures, immediate recovery with correct input, PIN changes and restart behavior. Set `UV` only when the request has satisfied the implemented verification protocol. A terminal click, an unlocked vault, and successful signing are not PIN verification.
 
 The vault passphrase and the authenticator PIN serve different purposes. Unlock the vault locally before attaching the virtual device; let the browser handle the normal authenticator PIN interaction. Locking the vault cancels pending work, invalidates transient PIN state, clears in-memory secrets where practical, and detaches the device.
 
@@ -135,7 +135,7 @@ Proposed implementation:
 - Atomic replacement through a private temporary file, file sync, rename, and parent-directory sync.
 - A separate exclusive lock preventing two daemon instances from writing the same vault.
 - Directory permissions `0700` and file permissions `0600`; reject unsafe paths or permissions.
-- Durable PIN retry updates before returning relevant failure responses; fail closed if persistence fails.
+- PIN setup/change must be durable before reporting success; PIN verification must not rewrite the vault. Real persistence failures remain errors, independent of authentication attempts.
 - Clear errors for a wrong passphrase, corrupt file, unsupported format, or failed write.
 
 Select dependency versions and KDF parameters during implementation, based on toolchain support and measured unlock cost. Validate untrusted envelope sizes and KDF limits before allocating memory. Use published library interfaces, not custom cryptographic primitives. [Argon2 library](https://docs.rs/argon2/latest/argon2/), [AEAD library](https://docs.rs/chacha20poly1305/latest/chacha20poly1305/).
@@ -298,7 +298,7 @@ Finalize crate boundaries during setup; this is a responsibility split, not a re
 | 2. Transport | Create UHID device; `INIT`, `PING`, `GetInfo`, errors, cancellation | Independent FIDO client and selected Firefox builds reach the device; crash removes device |
 | 3. First ceremony | ES256 registration/assertion and explicit presence with disposable keys | Local RP verifies registration and allow-list login in selected Firefox builds |
 | 4. Complete passkey behavior | Discoverability, multiple accounts, ClientPIN, reset, silent probes | Selected Firefox builds succeed with resident keys and `userVerification: "required"`; negative cases fail correctly |
-| 5. Persistence | Encrypted vault, retries, locking, atomic writes, management CLI | Reopened vault authenticates; corruption, write failure, and competing writers fail safely |
+| 5. Persistence | Encrypted vault, unlimited authentication attempts, locking, atomic writes, management CLI | Reopened vault authenticates; corruption, write failure, and competing writers fail safely |
 | 6. Release validation | Packaging, browser/package matrix, parser fuzzing, lifecycle checks | Reproducible setup and test report, supported combinations documented |
 
 Stages 3 and 4 may use an in-memory store with the same interface as the persistent vault. Stage 3 is a development milestone, not a finished passkey release. Exercise real browser discovery in stages 2–3 rather than relying on library tests. Registration in either browser must authenticate in the other using the same stored credential before claiming cross-browser interoperability. That check now passes for the recorded Firefox/Chrome builds, both with and without required UV.
@@ -317,7 +317,7 @@ The RP fixture should generate unpredictable challenges, validate origin and RP 
 | Discoverable credential, no allow list | Correct user handle returned and login succeeds |
 | Two accounts at one RP | Both accounts remain usable through the appropriate selection flow |
 | Resident key and UV required | Both succeed with the completed profile and valid PIN; invalid verification fails |
-| PIN setup, change, wrong PIN, blocking | Correct state transitions, retries, and persistence |
+| PIN setup/change and unlimited attempts | Repeated incorrect PINs, token MACs and passphrases never block valid input; legacy zero-retry vaults remain usable; setup/change persist, verification does not write |
 | Wrong RP, unknown credential, exclusion list | No unauthorized assertion or unintended duplicate registration |
 | Silent preflight | No unwanted presence prompt; correct flags and credential results |
 | Cancel during approval/signing | No late success; subsequent operations still work |

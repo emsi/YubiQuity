@@ -328,7 +328,7 @@ fn main() -> Result<()> {
             exit_after,
             test_presence,
         } => {
-            eprintln!("EPHEMERAL DEVELOPMENT MODE: credentials, PIN and retries are lost on exit. Use 'run --vault PATH' for persistent operation.");
+            eprintln!("EPHEMERAL DEVELOPMENT MODE: credentials and PIN are lost on exit. Use 'run --vault PATH' for persistent operation.");
             if test_presence.is_some() {
                 eprintln!("WARNING: explicit test presence backend enabled; no real user presence is proved.");
             }
