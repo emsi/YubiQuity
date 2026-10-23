@@ -1,11 +1,13 @@
 #pragma once
 #include "process.h"
+#include "setup.h"
 #include "ui.h"
 #include <QLabel>
 #include <QMainWindow>
 #include <QPointer>
 #include <QSettings>
 #include <QSystemTrayIcon>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <memory>
 
@@ -28,7 +30,7 @@ private:
   QString backend, vault, socket, externalSocket, helper;
   QSettings settings;
   QProcess service, watch;
-  QByteArray watchBuffer, serviceError, heldSecret;
+  QByteArray watchBuffer, serviceError, heldSecret, currentPin;
   QTimer startup, heartbeat;
   int startupAttempts = 0;
   bool stopping = false, busy = false, sessionLocked = false,
@@ -42,10 +44,13 @@ private:
   QLabel *status, *detail, *vaultLabel, *sessionNote;
   QPushButton *unlock, *lock, *choose, *create, *hideToTray;
   QSystemTrayIcon *tray;
+  QTabWidget *tabs;
+  SetupPage *setup;
   void startService(bool askUnlock = false);
   void startWatch();
   void stopService();
   void failure(const QString &message);
+  void describe(const QString &message);
   void readSnapshots();
   void applySnapshot();
   void dismissApproval();
@@ -55,6 +60,7 @@ private:
   void selectVault(bool newVault);
   void promptSecret(bool newVault = false);
   void unlockWith(QByteArray secret);
+  void promptPin(bool askCurrent);
   void runCommand(const QStringList &arguments, QByteArray secret,
                   bool secretInput,
                   std::function<void(bool, QByteArray, QString)> done);

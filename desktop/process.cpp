@@ -82,14 +82,14 @@ Command::Command(QObject *parent) : QObject(parent) {
 }
 
 void Command::start(const QString &binary, const QStringList &arguments,
-                    QByteArray secret, bool secretInput) {
+                    QByteArray secret, bool secretInput, int timeoutMs) {
   protectChild(process, secretInput);
   process.start(binary, arguments);
   if (secretInput)
     process.write(secret);
   process.closeWriteChannel();
   erase(secret);
-  timeout.start(30000);
+  timeout.start(timeoutMs);
 }
 
 void Command::complete(bool ok, const QString &error) {
@@ -115,7 +115,7 @@ Command::~Command() {
 Pinentry::Pinentry(QObject *parent) : QObject(parent) {
   timeout.setSingleShot(true);
   connect(&timeout, &QTimer::timeout, this,
-          [this] { fail(tr("Passphrase entry timed out.")); });
+          [this] { fail(tr("Secret entry timed out.")); });
   connect(&process, &QProcess::readyReadStandardOutput, this, &Pinentry::read);
   // Do not log secret-prompt diagnostics or forward arbitrary Assuan errors.
   connect(&process, &QProcess::readyReadStandardError, this, [this] {
@@ -129,34 +129,52 @@ Pinentry::Pinentry(QObject *parent) : QObject(parent) {
           });
   connect(&process, &QProcess::finished, this, [this] {
     if (!done)
-      fail(tr("Passphrase entry was cancelled."));
+      fail(tr("Secret entry was cancelled."));
   });
 }
 
 void Pinentry::start(bool create) {
+  startPrompt(
+      create ? QByteArray("Choose a vault passphrase (at least 12 "
+                          "bytes).\nThis encrypts your saved passkeys. It is "
+                          "separate from the browser's security-key PIN.")
+             : QByteArray("Unlock your YubiQuity vault.\nThis is the vault "
+                          "passphrase, not the browser's security-key PIN."),
+      "Vault passphrase:", create ? "Create vault" : "Unlock",
+      create ? "Confirm passphrase:" : "");
+}
+
+void Pinentry::startPin(bool newPin) {
+  startPrompt(
+      newPin
+          ? QByteArray("Choose a security-key PIN for this vault (at least 4 "
+                       "characters, at most 63 UTF-8 bytes).\nYour browser "
+                       "asks for this PIN when using passkeys. It is separate "
+                       "from your vault passphrase. Attempts are unlimited.")
+          : QByteArray("Enter the current security-key PIN to change it.\nThis "
+                       "is the PIN your browser asks for, not the vault "
+                       "passphrase. Attempts are unlimited."),
+      newPin ? "New security-key PIN:" : "Current security-key PIN:",
+      newPin ? "Save PIN" : "Continue", newPin ? "Confirm PIN:" : "");
+}
+
+void Pinentry::startPrompt(const QByteArray &description,
+                           const QByteArray &prompt, const QByteArray &accept,
+                           const QByteArray &repeat) {
   auto binary = QStandardPaths::findExecutable("pinentry-qt");
   if (binary.isEmpty() || (qEnvironmentVariableIsEmpty("DISPLAY") &&
                            qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY"))) {
     fail(tr("A graphical desktop and pinentry-qt are required."));
     return;
   }
-  commands = {
-      "SETTITLE YubiQuity",
-      "SETDESC " +
-          assuanEscape(
-              create ? QByteArray(
-                           "Choose a vault passphrase (at least 12 "
-                           "bytes).\nThis encrypts your saved passkeys. It is "
-                           "separate from the browser's security-key PIN.")
-                     : QByteArray(
-                           "Unlock your YubiQuity vault.\nThis is the vault "
-                           "passphrase, not the browser's security-key PIN.")),
-      "SETPROMPT Vault passphrase:",
-      "SETOK " + QByteArray(create ? "Create vault" : "Unlock"),
-      "SETCANCEL Cancel",
-      "SETTIMEOUT 120"};
-  if (create)
-    commands.append("SETREPEAT Confirm passphrase:");
+  commands = {"SETTITLE YubiQuity",
+              "SETDESC " + assuanEscape(description),
+              "SETPROMPT " + assuanEscape(prompt),
+              "SETOK " + assuanEscape(accept),
+              "SETCANCEL Cancel",
+              "SETTIMEOUT 120"};
+  if (!repeat.isEmpty())
+    commands.append("SETREPEAT " + assuanEscape(repeat));
   commands.append("GETPIN");
   protectChild(process);
   process.start(binary, {});
@@ -166,7 +184,7 @@ void Pinentry::start(bool create) {
 void Pinentry::read() {
   buffer += process.readAllStandardOutput();
   if (buffer.size() > 8192) {
-    fail(tr("Invalid passphrase-prompt response."));
+    fail(tr("Invalid secret-prompt response."));
     return;
   }
   while (buffer.contains('\n') && !done) {
@@ -178,7 +196,7 @@ void Pinentry::read() {
     if (line.startsWith("D ") && readingSecret) {
       if (!assuanDecode(line.mid(2), secret)) {
         erase(line);
-        fail(tr("Invalid or oversized passphrase."));
+        fail(tr("Invalid or oversized secret."));
         return;
       }
     } else if (line == "OK" || line.startsWith("OK ")) {
@@ -196,7 +214,7 @@ void Pinentry::read() {
       }
     } else if (!line.startsWith("#") && !line.startsWith("S ")) {
       erase(line);
-      fail(tr("Passphrase entry was cancelled or rejected."));
+      fail(tr("Secret entry was cancelled or rejected."));
       return;
     }
     erase(line);
@@ -214,7 +232,7 @@ void Pinentry::fail(const QString &message) {
   emit failed(message);
 }
 
-void Pinentry::cancel() { fail(tr("Passphrase entry cancelled.")); }
+void Pinentry::cancel() { fail(tr("Secret entry cancelled.")); }
 
 Pinentry::~Pinentry() {
   done = true;

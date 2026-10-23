@@ -18,7 +18,8 @@ public:
   explicit Command(QObject *parent = nullptr);
   ~Command() override;
   void start(const QString &binary, const QStringList &arguments,
-             QByteArray secret = {}, bool secretInput = false);
+             QByteArray secret = {}, bool secretInput = false,
+             int timeoutMs = 30000);
   void cancel();
 signals:
   void finished(bool ok, QByteArray output, QString error);
@@ -38,6 +39,7 @@ public:
   explicit Pinentry(QObject *parent = nullptr);
   ~Pinentry() override;
   void start(bool create);
+  void startPin(bool newPin);
   void cancel();
 signals:
   void secretReady(QByteArray secret);
@@ -52,4 +54,6 @@ private:
   bool readingSecret = false;
   void read();
   void fail(const QString &message);
+  void startPrompt(const QByteArray &description, const QByteArray &prompt,
+                   const QByteArray &accept, const QByteArray &repeat = {});
 };

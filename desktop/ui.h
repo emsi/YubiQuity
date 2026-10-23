@@ -18,6 +18,7 @@ class SnapshotModel {
 public:
   bool update(const QJsonObject &event, QString &error);
   QString state;
+  bool pinKnown = false, pinConfigured = false;
   Pending pending;
 
 private:

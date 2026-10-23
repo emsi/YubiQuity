@@ -4,6 +4,7 @@
 #include "window.h"
 #include <QDialogButtonBox>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLocalServer>
@@ -14,6 +15,7 @@
 #include <QWindow>
 #include <QtEndian>
 #include <csignal>
+#include <optional>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -51,6 +53,7 @@ public:
   int sequence = 0;
   QJsonObject request = pending();
   bool locked = false;
+  std::optional<bool> pinConfigured;
   FakeService() {
     chmod(QFile::encodeName(dir.path()).constData(), 0700);
     listener.setSocketOptions(QLocalServer::UserAccessOption);
@@ -74,6 +77,10 @@ public:
           publish();
         } else {
           commands.append(command);
+          if (command.value("command") == "configure_pin") {
+            pinConfigured = true;
+            publish();
+          }
           if (command.value("command") == "lock")
             locked = true;
           send(socket, {{"ok", true}, {"state", locked ? "locked" : "ready"}});
@@ -95,6 +102,11 @@ public:
   }
   void publish() {
     auto data = snapshotEvent(++sequence, request);
+    if (pinConfigured) {
+      auto state = data["snapshot"].toObject();
+      state["pin_configured"] = *pinConfigured;
+      data["snapshot"] = state;
+    }
     if (locked)
       data["snapshot"] = QJsonObject{{"ok", true}, {"state", "locked"}};
     if (watcher)
@@ -115,6 +127,36 @@ private slots:
     QTest::qWait(100);
     QVERIFY(dialog.grab().save(
         qEnvironmentVariable("YUBIQUITY_TEST_ARTIFACTS") + "/approval.png"));
+  }
+  void nativeSetupPreview() {
+    if (!qEnvironmentVariableIsSet("YUBIQUITY_NATIVE_TEST"))
+      QSKIP("Run tests/desktop_native.py on its private Xvfb display");
+    SetupPage page("unused-backend", {});
+    page.resize(760, 720);
+    page.showReport(
+        {{"version", 1},
+         {"checks",
+          QJsonArray{
+              QJsonObject{{"title", "Desktop session"},
+                          {"status", "ok"},
+                          {"detail", "Current access group is active."}},
+              QJsonObject{{"title", "Create a software security key"},
+                          {"status", "ok"},
+                          {"detail", "UHID is accessible."}},
+              QJsonObject{
+                  {"title", "Browser-facing device"},
+                  {"status", "ok"},
+                  {"detail", "A temporary device was opened and detached."}},
+              QJsonObject{{"title", "Firefox Snap connection"},
+                          {"status", "ok"},
+                          {"detail", "Security-key interface connected."}},
+              QJsonObject{{"title", "Firefox Snap device permission"},
+                          {"status", "ok"},
+                          {"detail", "Current device tag present."}}}}});
+    page.show();
+    QTest::qWait(100);
+    QVERIFY(page.grab().save(qEnvironmentVariable("YUBIQUITY_TEST_ARTIFACTS") +
+                             "/setup.png"));
   }
   void childDiesWithItsParent() {
     QProcess parent;
@@ -163,6 +205,63 @@ private slots:
              failed.isEmpty() ? "" : qPrintable(failed[0][0].toString()));
     QCOMPARE(secret[0][0].toByteArray(),
              QByteArray("disposable%test+passphrase"));
+  }
+  void nativeWindowPinSetup() {
+    if (!qEnvironmentVariableIsSet("YUBIQUITY_NATIVE_TEST"))
+      QSKIP("Run tests/desktop_native.py on its private Xvfb display");
+    FakeService server;
+    server.request = {};
+    server.pinConfigured = false;
+    Window window(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"), {},
+                  server.path(), {});
+    auto *pin = window.findChild<QPushButton *>("setupPin");
+    QVERIFY(pin);
+    QTRY_VERIFY(pin->isEnabled());
+    pin->click();
+    QTRY_COMPARE_WITH_TIMEOUT(server.commands.size(), 1, 15000);
+    const auto request = server.commands.front();
+    QCOMPARE(request.value("command").toString(), QString("configure_pin"));
+    QCOMPARE(request.value("current").toArray().size(), 0);
+    QByteArray received;
+    for (auto byte : request.value("new").toArray())
+      received.append(char(byte.toInt()));
+    QCOMPARE(received, QByteArray("disposable%test+passphrase"));
+    QTRY_VERIFY(pin->text().contains("Change"));
+    QTRY_VERIFY(window.findChild<QLabel *>("setupResult")
+                    ->text()
+                    .contains("PIN saved"));
+  }
+  void setupStatesAndReadableDiagnostics() {
+    SetupPage page("unused-backend", {});
+    auto *pin = page.findChild<QPushButton *>("setupPin");
+    QVERIFY(!pin->isEnabled());
+    page.setVaultState(true, true, true, false, false);
+    QVERIFY(pin->isEnabled());
+    QVERIFY(pin->text().startsWith("Set"));
+    page.setVaultState(true, true, true, true, false);
+    QVERIFY(pin->text().startsWith("Change"));
+    page.setVaultState(true, true, true, true, true);
+    QVERIFY(!pin->isEnabled());
+    page.setVaultState(true, false, false, false, false);
+    QVERIFY(!pin->isEnabled());
+    page.showReport(
+        {{"version", 1},
+         {"repair_device", false},
+         {"repair_firefox", true},
+         {"checks",
+          QJsonArray{QJsonObject{
+              {"title", "Firefox Snap"},
+              {"status", "attention"},
+              {"detail", "Connection missing.\nEnable Firefox Snap."}}}}});
+    QVERIFY(!page.findChild<QPushButton *>("setupFirefox")->isHidden());
+    QVERIFY(page.findChild<QPushButton *>("setupDevice")->isHidden());
+    auto *checks = page.findChild<QLabel *>("setupDetails");
+    QCOMPARE(checks->textFormat(), Qt::PlainText);
+    QVERIFY(
+        checks->text().contains("Connection missing.\nEnable Firefox Snap."));
+    page.showReport(
+        {{"version", 1}, {"checks", QJsonArray{}}, {"repair_firefox", false}});
+    QVERIFY(page.findChild<QPushButton *>("setupFirefox")->isHidden());
   }
   void nativePinentryCancel() {
     if (!qEnvironmentVariableIsSet("YUBIQUITY_NATIVE_TEST"))

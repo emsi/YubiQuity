@@ -65,6 +65,8 @@ bool SnapshotModel::update(const QJsonObject &event, QString &error) {
   }
   sequence = seq;
   state = nextState;
+  pinKnown = snapshot.value("pin_configured").isBool() && state == "ready";
+  pinConfigured = pinKnown && snapshot.value("pin_configured").toBool();
   pending = next;
   return true;
 }

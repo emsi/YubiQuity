@@ -24,7 +24,7 @@ int main(int argc, char **argv) {
   QApplication app(argc, argv);
   app.setOrganizationName("YubiQuity");
   app.setApplicationName("YubiQuity");
-  app.setApplicationVersion("0.1.0");
+  app.setApplicationVersion(YUBIQUITY_VERSION);
   app.setQuitOnLastWindowClosed(false);
   QCommandLineParser parser;
   parser.setApplicationDescription(

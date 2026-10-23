@@ -62,7 +62,37 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
   layout->addWidget(hideToTray);
   auto *quit = new QPushButton(tr("Lock and quit"));
   layout->addWidget(quit);
-  setCentralWidget(body);
+  tabs = new QTabWidget;
+  tabs->setObjectName("mainTabs");
+  tabs->addTab(body, tr("Vault"));
+  setup = new SetupPage(backend, helper);
+  tabs->addTab(setup, tr("Setup and browser checks"));
+  setCentralWidget(tabs);
+  connect(setup, &SetupPage::createVault, this, [this] { selectVault(true); });
+  connect(setup, &SetupPage::openVault, this, [this] { selectVault(false); });
+  connect(setup, &SetupPage::unlockVault, unlock, &QPushButton::click);
+  connect(setup, &SetupPage::configurePin, this, [this] {
+    if (!busy && !sessionLocked && model.state == "ready" && model.pinKnown) {
+      erase(currentPin);
+      promptPin(model.pinConfigured);
+    }
+  });
+  connect(setup, &SetupPage::finished, this, [this] {
+    settings.setValue("setupSeen", true);
+    tabs->setCurrentIndex(0);
+    if (model.state == "ready" && !busy)
+      hideInTray();
+  });
+  connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
+    if (index == 1) {
+      resize(qMax(width(), 700), qMax(height(), 650));
+      setup->check();
+    }
+  });
+  // External-service mode is used by explicit integrations/test harnesses;
+  // it does not manage this computer's first-run state.
+  if (externalSocket.isEmpty() && !settings.value("setupSeen", false).toBool())
+    QTimer::singleShot(0, this, [this] { tabs->setCurrentIndex(1); });
   tray = new QSystemTrayIcon(windowIcon(), this);
   tray->setToolTip(tr("YubiQuity — locked"));
   auto *menu = new QMenu(this);
@@ -197,6 +227,10 @@ void Window::updateButtons() {
                      externalSocket.isEmpty());
   create->setEnabled(choose->isEnabled());
   hideToTray->setVisible(QSystemTrayIcon::isSystemTrayAvailable());
+  setup->setVaultState(!vault.isEmpty() || !externalSocket.isEmpty(),
+                       model.state == "ready", model.pinKnown,
+                       model.pinConfigured, busy || sessionLocked,
+                       externalSocket.isEmpty());
 }
 
 void Window::startService(bool askUnlock) {
@@ -274,6 +308,7 @@ void Window::stopService() {
   runtime.reset();
   watchBuffer.clear();
   erase(heldSecret);
+  erase(currentPin);
   model = SnapshotModel{};
   dismissedToken.clear();
   displayedState.clear();
@@ -287,9 +322,15 @@ void Window::stopService() {
 void Window::failure(const QString &message) {
   stopService();
   status->setText(tr("Not connected"));
-  detail->setText(message);
+  describe(message);
   tray->setToolTip(tr("YubiQuity — not connected"));
   Show();
+}
+
+void Window::describe(const QString &message) {
+  detail->setText(message);
+  if (tabs->currentIndex() == 1)
+    setup->message(message);
 }
 
 void Window::readSnapshots() {
@@ -376,7 +417,8 @@ void Window::applySnapshot() {
   }
   if (hideWhenReady && !busy) {
     hideWhenReady = false;
-    hideInTray(); // Once per ready transition, never on every heartbeat.
+    if (tabs->currentIndex() == 0)
+      hideInTray(); // Keep onboarding visible until the user finishes it.
   }
   if (model.pending.token.isEmpty()) {
     dismissApproval();
@@ -458,7 +500,7 @@ void Window::promptSecret(bool newVault) {
             prompt->deleteLater();
             if (!stopping) {
               setBusy(false);
-              detail->setText(message);
+              describe(message);
             }
           });
   connect(prompt, &Pinentry::secretReady, this,
@@ -483,7 +525,7 @@ void Window::promptSecret(bool newVault) {
                          if (!ok) {
                            erase(heldSecret);
                            setBusy(false);
-                           detail->setText(error);
+                           describe(error);
                            return;
                          }
                          settings.setValue("vault", vault);
@@ -508,13 +550,79 @@ void Window::unlockWith(QByteArray secret) {
         setBusy(false);
         if (!ok) {
           status->setText(tr("Locked"));
-          detail->setText(
+          describe(
               tr("Unlock failed. Check the vault passphrase and try again.\n%1")
                   .arg(error));
         } else
           applySnapshot();
       });
   erase(secret);
+}
+
+void Window::promptPin(bool askCurrent) {
+  if (sessionLocked || stopping || model.state != "ready") {
+    erase(currentPin);
+    return;
+  }
+  setBusy(true);
+  auto *prompt = new Pinentry(this);
+  pinentry = prompt;
+  connect(prompt, &Pinentry::failed, this,
+          [this, prompt](const QString &message) {
+            pinentry = nullptr;
+            prompt->deleteLater();
+            erase(currentPin);
+            if (!stopping) {
+              setBusy(false);
+              setup->message(message);
+            }
+          });
+  connect(
+      prompt, &Pinentry::secretReady, this,
+      [this, prompt, askCurrent](QByteArray secret) {
+        pinentry = nullptr;
+        prompt->deleteLater();
+        if (sessionLocked || stopping || model.state != "ready") {
+          erase(secret);
+          erase(currentPin);
+          return;
+        }
+        if (secret.size() > 63 || secret.contains('\0')) {
+          erase(secret);
+          erase(currentPin);
+          setBusy(false);
+          setup->message(tr("A PIN must fit in 63 UTF-8 bytes and contain no "
+                            "NUL characters. Try again."));
+          return;
+        }
+        if (askCurrent) {
+          currentPin = secret;
+          erase(secret);
+          promptPin(false);
+          return;
+        }
+        QByteArray input(1, char(currentPin.size()));
+        input += currentPin;
+        input += secret;
+        erase(currentPin);
+        erase(secret);
+        runCommand(
+            {"control", "--socket", socket, "configure-pin", "--secret-fd",
+             "198"},
+            input, true,
+            [this](bool ok, QByteArray output, const QString &error) {
+              setBusy(false);
+              const auto response = QJsonDocument::fromJson(output).object();
+              if (ok)
+                setup->message(tr("Security-key PIN saved in this vault. Use "
+                                  "it when your browser asks for a PIN."));
+              else
+                setup->message(response.value("error").toString(error));
+              applySnapshot();
+            });
+        erase(input);
+      });
+  prompt->startPin(!askCurrent);
 }
 
 void Window::selectVault(bool newVault) {
@@ -524,8 +632,8 @@ void Window::selectVault(bool newVault) {
   // Explicit creation action only. umask is 0077; do not chmod existing paths.
   // The Rust vault preflight still validates every ancestor at actual use time.
   if (newVault && !QDir().mkpath(defaultDirectory)) {
-    detail->setText(tr("Could not create the application data directory. Check "
-                       "its permissions."));
+    describe(tr("Could not create the application data directory. Check "
+                "its permissions."));
     return;
   }
   auto path = newVault ? QFileDialog::getSaveFileName(
@@ -539,8 +647,8 @@ void Window::selectVault(bool newVault) {
   if (path.isEmpty())
     return;
   if (newVault && QFileInfo::exists(path)) {
-    detail->setText(tr("That file already exists. It will not be overwritten. "
-                       "Choose a new name or open the existing vault."));
+    describe(tr("That file already exists. It will not be overwritten. "
+                "Choose a new name or open the existing vault."));
     return;
   }
   stopService();
@@ -558,7 +666,7 @@ void Window::lockVault() {
   if (busy || model.state.isEmpty()) {
     stopService();
     status->setText(tr("Locked"));
-    detail->setText(tr("Unlock when you are ready to use the key again."));
+    describe(tr("Unlock when you are ready to use the key again."));
     return;
   }
   dismissApproval();
