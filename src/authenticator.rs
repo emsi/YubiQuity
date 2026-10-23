@@ -103,6 +103,18 @@ impl<S: Store> Authenticator<S> {
     pub fn healthy(&self) -> bool {
         self.store.healthy()
     }
+    pub fn configure_pin(
+        &mut self,
+        current: &[u8],
+        new: &[u8],
+        context: &dyn RequestContext,
+    ) -> CtapResult<()> {
+        if !self.healthy() {
+            return Err(Status::Other);
+        }
+        self.invalidate();
+        self.pin.configure(&mut self.store, current, new, context)
+    }
     pub fn invalidate(&mut self) {
         self.enumeration = None;
     }

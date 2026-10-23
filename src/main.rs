@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -28,6 +28,9 @@ struct Args {
 enum Commands {
     /// Check this process's access and vault without asking for secrets or changing settings.
     Doctor {
+        /// Structured first-run checks, including browser sandbox integration.
+        #[arg(long)]
+        json: bool,
         #[arg(long)]
         vault: Option<PathBuf>,
         /// Also attach and remove a temporary device to verify dynamic hidraw access.
@@ -134,6 +137,12 @@ enum ControlAction {
         #[arg(long, value_parser = clap::value_parser!(i32).range(3..))]
         passphrase_fd: Option<i32>,
     },
+    /// Set/change the browser PIN through the private local service.
+    ConfigurePin {
+        /// Inherited descriptor: current-PIN length byte, current PIN, then new PIN.
+        #[arg(long, value_parser = clap::value_parser!(i32).range(3..))]
+        secret_fd: i32,
+    },
     /// Approve exactly this pending request; this is not a blanket authorization.
     Approve { token: String },
     /// Deny exactly this pending request.
@@ -156,11 +165,22 @@ fn main() -> Result<()> {
     ctrlc::set_handler(move || signal.store(true, Ordering::Relaxed))?;
     match args.command {
         Commands::Doctor {
+            json,
             vault,
             probe,
             node_helper,
         } => {
-            diagnostics::doctor(vault.as_deref(), probe, node_helper.as_deref())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&yubiquity::onboarding::inspect(
+                        probe,
+                        node_helper.as_deref()
+                    ))?
+                );
+            } else {
+                diagnostics::doctor(vault.as_deref(), probe, node_helper.as_deref())?;
+            }
         }
         Commands::Init {
             vault,
@@ -287,6 +307,17 @@ fn main() -> Result<()> {
                     }
                 }
                 ControlAction::Approve { token } => control::Request::Approve { token },
+                ControlAction::ConfigurePin { secret_fd } => {
+                    let secret = secret_input::read_descriptor(secret_fd, 127)?;
+                    let current_len = usize::from(*secret.first().context("missing PIN input")?);
+                    if current_len > 63 || secret.len() <= current_len + 1 {
+                        bail!("invalid PIN input framing");
+                    }
+                    control::Request::ConfigurePin {
+                        current: secret[1..=current_len].to_vec(),
+                        new: secret[current_len + 1..].to_vec(),
+                    }
+                }
                 ControlAction::Deny { token } => control::Request::Deny { token },
                 ControlAction::Lock => control::Request::Lock {},
             };

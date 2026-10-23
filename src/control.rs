@@ -26,6 +26,7 @@ pub const WATCH_VERSION: u32 = 1;
 pub enum Request {
     Status {},
     Unlock { passphrase: Vec<u8> },
+    ConfigurePin { current: Vec<u8>, new: Vec<u8> },
     Approve { token: String },
     Deny { token: String },
     Lock {},
@@ -53,6 +54,8 @@ pub struct Response {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending: Option<Pending>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_configured: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -70,6 +73,7 @@ impl Response {
             state: "locked".into(),
             error: None,
             pending: None,
+            pin_configured: None,
         }
     }
     pub fn ready(pending: Option<Pending>) -> Self {
@@ -78,6 +82,7 @@ impl Response {
             state: "ready".into(),
             error: None,
             pending,
+            pin_configured: None,
         }
     }
     pub fn error(mut self, message: &'static str) -> Self {

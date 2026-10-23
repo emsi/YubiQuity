@@ -7,6 +7,7 @@ pub mod ctap;
 mod device_access;
 pub mod diagnostics;
 pub mod hid;
+pub mod onboarding;
 pub mod pin;
 pub mod secret_input;
 pub mod service;

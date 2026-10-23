@@ -9,28 +9,7 @@ use zeroize::Zeroizing;
 
 pub fn read(passphrase_fd: Option<i32>, confirm: bool) -> Result<Zeroizing<Vec<u8>>> {
     if let Some(fd) = passphrase_fd {
-        if fd < 3 {
-            bail!("passphrase descriptor must be >= 3; stdin is reserved for approval commands");
-        }
-        // Do not leak the inherited input handle to the optional node helper.
-        // SAFETY: fcntl validates the descriptor; these commands take scalar flags.
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-        // SAFETY: F_SETFD receives the descriptor just checked and scalar flags.
-        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
-            return Err(std::io::Error::last_os_error()).context("protect passphrase descriptor");
-        }
-        // SAFETY: fcntl validates the supplied number and returns a new owned FD;
-        // the original belongs to the caller and is never closed by this function.
-        let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
-        if duplicate < 0 {
-            return Err(std::io::Error::last_os_error()).context("duplicate passphrase descriptor");
-        }
-        // SAFETY: duplicate is a fresh owned descriptor, transferred exactly once.
-        let file = unsafe { File::from_raw_fd(duplicate) };
-        let mut secret = Zeroizing::new(Vec::with_capacity(MAX_PASSPHRASE + 2));
-        file.take((MAX_PASSPHRASE + 2) as u64)
-            .read_to_end(&mut secret)
-            .context("read passphrase descriptor")?;
+        let mut secret = read_descriptor(fd, MAX_PASSPHRASE + 1)?;
         if secret.ends_with(b"\n") {
             secret.pop();
         }
@@ -69,4 +48,34 @@ pub fn harden_process() -> Result<()> {
         return Err(std::io::Error::last_os_error()).context("disable process dumping");
     }
     Ok(())
+}
+
+/// Bounded inherited secret input; never include its contents in diagnostics.
+pub fn read_descriptor(fd: i32, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+    if fd < 3 {
+        bail!("secret descriptor must be >= 3; stdin is reserved for approval commands");
+    }
+    // Do not leak the inherited input handle to the optional node helper.
+    // SAFETY: fcntl validates the descriptor; these commands take scalar flags.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    // SAFETY: F_SETFD receives the descriptor just checked and scalar flags.
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error()).context("protect secret descriptor");
+    }
+    // SAFETY: fcntl validates the supplied number and returns a new owned FD;
+    // the original belongs to the caller and is never closed by this function.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+    if duplicate < 0 {
+        return Err(std::io::Error::last_os_error()).context("duplicate secret descriptor");
+    }
+    // SAFETY: duplicate is a fresh owned descriptor, transferred exactly once.
+    let file = unsafe { File::from_raw_fd(duplicate) };
+    let mut secret = Zeroizing::new(Vec::with_capacity(limit + 1));
+    file.take((limit + 1) as u64)
+        .read_to_end(&mut secret)
+        .context("read secret descriptor")?;
+    if secret.len() > limit {
+        bail!("secret input is too long");
+    }
+    Ok(secret)
 }

@@ -38,7 +38,21 @@ struct Work {
     cancel: Arc<AtomicBool>,
 }
 
+enum Job {
+    Ctap(Work),
+    Pin {
+        id: RequestId,
+        current: Zeroizing<Vec<u8>>,
+        new: Zeroizing<Vec<u8>>,
+    },
+}
+
 enum WorkEvent {
+    PinConfigured {
+        id: RequestId,
+        result: CtapResult<()>,
+        fatal: bool,
+    },
     Prompt {
         transaction: Transaction,
         prompt: Prompt,
@@ -51,6 +65,21 @@ enum WorkEvent {
         response: Zeroizing<Vec<u8>>,
         fatal: bool,
     },
+}
+
+struct LocalContext {
+    shutdown: Arc<AtomicBool>,
+}
+impl RequestContext for LocalContext {
+    fn now_ms(&self) -> u64 {
+        0
+    }
+    fn cancelled(&self) -> bool {
+        self.shutdown.load(Ordering::Acquire)
+    }
+    fn presence(&mut self, _: Prompt) -> CtapResult<()> {
+        Err(Status::OperationDenied)
+    }
 }
 
 struct ContextImpl {
@@ -113,24 +142,27 @@ impl RequestContext for ContextImpl {
 }
 
 struct Worker {
-    input: Option<SyncSender<Work>>,
+    input: Option<SyncSender<Job>>,
     events: Receiver<WorkEvent>,
     shutdown: Arc<AtomicBool>,
     invalidation: Arc<AtomicU64>,
+    pin_configured: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
 }
 
 impl Worker {
     fn start<S: Store + 'static>(mut authenticator: Authenticator<S>, clock: Instant) -> Self {
-        let (input, receive) = mpsc::sync_channel::<Work>(1);
+        let (input, receive) = mpsc::sync_channel::<Job>(1);
         let (events, output) = mpsc::sync_channel(8);
         let shutdown = Arc::new(AtomicBool::new(false));
         let invalidation = Arc::new(AtomicU64::new(0));
+        let pin_configured = Arc::new(AtomicBool::new(authenticator.state().pin.is_some()));
+        let pin_state = pin_configured.clone();
         let stop = shutdown.clone();
         let epoch = invalidation.clone();
         let join = std::thread::spawn(move || {
             let mut last_epoch = 0;
-            while let Ok(work) = receive.recv() {
+            while let Ok(job) = receive.recv() {
                 if stop.load(Ordering::Acquire) {
                     break;
                 }
@@ -139,6 +171,27 @@ impl Worker {
                     authenticator.invalidate();
                     last_epoch = current_epoch;
                 }
+                let work = match job {
+                    Job::Ctap(work) => work,
+                    Job::Pin { id, current, new } => {
+                        let context = LocalContext {
+                            shutdown: stop.clone(),
+                        };
+                        let result = authenticator.configure_pin(&current, &new, &context);
+                        pin_state.store(authenticator.state().pin.is_some(), Ordering::Release);
+                        if events
+                            .send(WorkEvent::PinConfigured {
+                                id,
+                                result,
+                                fatal: !authenticator.healthy(),
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                };
                 let mut context = ContextImpl {
                     transaction: work.transaction,
                     cancel: work.cancel,
@@ -151,6 +204,7 @@ impl Worker {
                     &work.request,
                     &mut context,
                 ));
+                pin_state.store(authenticator.state().pin.is_some(), Ordering::Release);
                 if events
                     .send(WorkEvent::Completed {
                         transaction: work.transaction,
@@ -168,6 +222,7 @@ impl Worker {
             events: output,
             shutdown,
             invalidation,
+            pin_configured,
             join: Some(join),
         }
     }
@@ -324,7 +379,7 @@ pub fn serve(
                         }
                     }
                 }
-                Request::Approve { .. } | Request::Deny { .. } => {
+                Request::Approve { .. } | Request::Deny { .. } | Request::ConfigurePin { .. } => {
                     server.respond(
                         id,
                         Response::locked().error("vault is locked; no pending request"),
@@ -352,6 +407,12 @@ fn run_inner<S: Store + 'static>(
     };
     let device = &mut attachment.device;
     let worker = &attachment.worker;
+    let snapshot = |approval: Option<&Approval>| {
+        let mut response = snapshot(approval);
+        response.pin_configured = Some(worker.pin_configured.load(Ordering::Acquire));
+        response
+    };
+    let mut configuring_pin = false;
     let input = (control.is_none() && options.test_presence.is_none()).then(input_reader);
     let mut input_ended = false;
     let mut fatal_storage = false;
@@ -361,7 +422,7 @@ fn run_inner<S: Store + 'static>(
     let mut lock_requested = None;
     println!("READY {} {}", device.path().display(), device.unique());
     if let Some((server, id)) = &mut control {
-        server.respond(*id, Response::ready(None))?;
+        server.respond(*id, snapshot(None))?;
     } else if options.test_presence.is_none() {
         eprintln!("Approval: type 'approve TOKEN' or 'deny TOKEN' for the displayed request. Type 'lock' or 'quit' to detach.");
     }
@@ -388,6 +449,10 @@ fn run_inner<S: Store + 'static>(
                     transaction,
                     payload,
                 } => {
+                    if configuring_pin {
+                        events.extend(engine.complete(transaction, &[0x06]));
+                        continue;
+                    }
                     let cancel = Arc::new(AtomicBool::new(false));
                     if let Some((_, previous)) = active.replace((transaction, cancel.clone())) {
                         previous.store(true, Ordering::Release);
@@ -397,7 +462,13 @@ fn run_inner<S: Store + 'static>(
                         request: payload,
                         cancel,
                     };
-                    if worker.input.as_ref().unwrap().try_send(work).is_err() {
+                    if worker
+                        .input
+                        .as_ref()
+                        .unwrap()
+                        .try_send(Job::Ctap(work))
+                        .is_err()
+                    {
                         active = None;
                         events.extend(engine.complete(transaction, &[0x06]));
                     }
@@ -424,6 +495,24 @@ fn run_inner<S: Store + 'static>(
 
         while let Ok(event) = worker.events.try_recv() {
             let emitted = match event {
+                WorkEvent::PinConfigured { id, result, fatal } => {
+                    configuring_pin = false;
+                    if let Some((server, _)) = &mut control {
+                        let response = match result {
+                            Ok(()) => snapshot(approval.as_ref()),
+                            Err(Status::PinInvalid) => snapshot(approval.as_ref()).error("The current PIN is incorrect. Try again; attempts are unlimited."),
+                            Err(Status::PinPolicyViolation) => snapshot(approval.as_ref()).error("Use at least 4 characters and at most 63 UTF-8 bytes, with no NUL characters."),
+                            Err(Status::PinNotSet) => snapshot(approval.as_ref()).error("No PIN is configured. Refresh and choose Set PIN."),
+                            Err(_) => snapshot(approval.as_ref()).error("PIN could not be saved. Lock and try again."),
+                        };
+                        server.respond(id, response)?;
+                    }
+                    if fatal {
+                        fatal_storage = true;
+                        break;
+                    }
+                    continue;
+                }
                 WorkEvent::Prompt {
                     transaction,
                     prompt,
@@ -520,6 +609,26 @@ fn run_inner<S: Store + 'static>(
                         continue;
                     }
                     Request::Status {} => snapshot(approval.as_ref()),
+                    Request::ConfigurePin { current, new } => {
+                        if active.is_some() || configuring_pin {
+                            snapshot(approval.as_ref()).error("A browser request or PIN update is in progress. Finish it and try again.")
+                        } else if worker
+                            .input
+                            .as_ref()
+                            .unwrap()
+                            .try_send(Job::Pin {
+                                id,
+                                current: Zeroizing::new(current.clone()),
+                                new: Zeroizing::new(new.clone()),
+                            })
+                            .is_err()
+                        {
+                            snapshot(approval.as_ref()).error("The key is busy. Try again.")
+                        } else {
+                            configuring_pin = true;
+                            continue;
+                        }
+                    }
                     Request::Unlock { .. } => {
                         Response::ready(None).error("vault is already unlocked")
                     }
@@ -659,6 +768,7 @@ mod tests {
                         events,
                         shutdown: shutdown.clone(),
                         invalidation: Arc::new(AtomicU64::new(0)),
+                        pin_configured: Arc::new(AtomicBool::new(false)),
                         join: Some(join),
                     },
                 };
@@ -730,11 +840,11 @@ mod tests {
                         .input
                         .as_ref()
                         .unwrap()
-                        .try_send(Work {
+                        .try_send(Job::Ctap(Work {
                             transaction,
                             request: payload,
                             cancel: cancel.clone(),
-                        })
+                        }))
                         .unwrap();
                     result = Some((transaction, cancel));
                 }
@@ -834,6 +944,7 @@ mod tests {
                     }
                 }
                 WorkEvent::Prompt { .. } => panic!("GetInfo must not prompt"),
+                WorkEvent::PinConfigured { .. } => panic!("no PIN update submitted"),
             }
         }
     }

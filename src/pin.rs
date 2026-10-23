@@ -28,6 +28,36 @@ pub struct PinRuntime {
 }
 
 impl PinRuntime {
+    /// Same-user desktop setup, serialized with CTAP on the authenticator worker.
+    /// The existing PIN is still required to change it. No attempt limits.
+    pub fn configure<S: Store>(
+        &mut self,
+        store: &mut S,
+        current: &[u8],
+        new: &[u8],
+        context: &dyn RequestContext,
+    ) -> CtapResult<()> {
+        let hash = pin_hash(new)?;
+        if let Some(stored) = &store.state().pin {
+            let candidate = pin_hash(current).map_err(|_| Status::PinInvalid)?;
+            if !bool::from(candidate.ct_eq(&stored.hash)) {
+                return Err(Status::PinInvalid);
+            }
+        } else if !current.is_empty() {
+            return Err(Status::PinNotSet);
+        }
+        let mut next = store.state().clone();
+        next.pin = Some(PinState {
+            hash: *hash,
+            retries: REPORTED_RETRIES,
+        });
+        // Old authorization tokens must not survive a PIN change, including a
+        // failed/ambiguous write. GuardedStore handles storage failures.
+        self.token = None;
+        self.agreement = None;
+        commit(store, next, context)
+    }
+
     fn rekey(&mut self, random: &mut dyn RandomSource) -> CtapResult<()> {
         // Invalidate first: failed entropy must not preserve the old ECDH key.
         self.agreement = None;
@@ -257,10 +287,17 @@ fn new_pin_hash(key: &[u8; 32], encrypted: &[u8]) -> CtapResult<Zeroizing<[u8; 1
         .iter()
         .position(|&b| b == 0)
         .ok_or(Status::PinPolicyViolation)?;
-    if !(4..=63).contains(&end) || plain[end..].iter().any(|&b| b != 0) {
+    if plain[end..].iter().any(|&b| b != 0) {
         return Err(Status::PinPolicyViolation);
     }
-    let pin = std::str::from_utf8(&plain[..end]).map_err(|_| Status::PinPolicyViolation)?;
+    pin_hash(&plain[..end])
+}
+
+fn pin_hash(bytes: &[u8]) -> CtapResult<Zeroizing<[u8; 16]>> {
+    if !(4..=63).contains(&bytes.len()) || bytes.contains(&0) {
+        return Err(Status::PinPolicyViolation);
+    }
+    let pin = std::str::from_utf8(bytes).map_err(|_| Status::PinPolicyViolation)?;
     if pin.chars().count() < 4 {
         return Err(Status::PinPolicyViolation);
     }

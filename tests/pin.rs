@@ -368,3 +368,60 @@ fn invalid_token_authentication_never_blocks_a_valid_token() {
         Err(Status::NoCredentials as u8)
     );
 }
+
+#[test]
+fn desktop_pin_setup_interoperates_with_ctap_and_invalidates_old_tokens() {
+    let mut auth = Authenticator::software(MemoryStore::default(), 0);
+    auth.configure_pin(b"", b"1234", &Consent).unwrap();
+    let client = Client::new(&mut auth);
+    let token = client.token(&mut auth, "1234").unwrap();
+    for _ in 0..20 {
+        assert_eq!(
+            auth.configure_pin(b"wrong", b"5678", &Consent),
+            Err(Status::PinInvalid)
+        );
+    }
+    // A stale setup window cannot replace an already configured PIN.
+    assert_eq!(
+        auth.configure_pin(b"", b"5678", &Consent),
+        Err(Status::PinInvalid)
+    );
+    for invalid in [b"123".as_slice(), b"1234\0", "🔑🔑".as_bytes(), &[b'a'; 64]] {
+        assert_eq!(
+            auth.configure_pin(b"1234", invalid, &Consent),
+            Err(Status::PinPolicyViolation)
+        );
+    }
+    auth.configure_pin(b"1234", b"5678", &Consent).unwrap();
+    let client = Client::new(&mut auth);
+    let fresh = client.token(&mut auth, "5678").unwrap();
+    assert_ne!(token, fresh);
+    assert_eq!(
+        client.token(&mut auth, "1234"),
+        Err(Status::PinInvalid as u8)
+    );
+    let client = Client::new(&mut auth);
+    client.token(&mut auth, "5678").unwrap();
+}
+
+#[test]
+fn cancelled_desktop_pin_setup_does_not_mutate_vault() {
+    struct Cancelled;
+    impl RequestContext for Cancelled {
+        fn now_ms(&self) -> u64 {
+            0
+        }
+        fn cancelled(&self) -> bool {
+            true
+        }
+        fn presence(&mut self, _: Prompt) -> CtapResult<()> {
+            panic!("local setup must not ask presence")
+        }
+    }
+    let mut auth = Authenticator::software(MemoryStore::default(), 0);
+    assert_eq!(
+        auth.configure_pin(b"", b"1234", &Cancelled),
+        Err(Status::Cancelled)
+    );
+    assert!(auth.state().pin.is_none());
+}

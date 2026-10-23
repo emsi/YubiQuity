@@ -21,7 +21,7 @@ from transport_integration import BINARY, node_arguments, device_test_lock, dead
 from vault_integration import PASSWORD, cli
 
 
-def ctl(path, action, *args, passphrase=PASSWORD, check=True):
+def ctl(path, action, *args, passphrase=PASSWORD, check=True, inherited=()):
     command = [str(BINARY), "control", "--socket", str(path), action, *args]
     secret_fd = None
     if action == "unlock":
@@ -32,7 +32,7 @@ def ctl(path, action, *args, passphrase=PASSWORD, check=True):
             os.close(output)
         command += ["--passphrase-fd", str(secret_fd)]
     try:
-        result = subprocess.run(command, pass_fds=() if secret_fd is None else (secret_fd,),
+        result = subprocess.run(command, pass_fds=inherited if secret_fd is None else (secret_fd,),
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=25)
     finally:
         if secret_fd is not None:
@@ -40,6 +40,18 @@ def ctl(path, action, *args, passphrase=PASSWORD, check=True):
     if check and result.returncode:
         raise AssertionError(f"control {action} failed: {result.stdout} {result.stderr}")
     return json.loads(result.stdout)
+
+
+def configure_pin(path, new, current=b"", check=True):
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, bytes([len(current)]) + current + new)
+    finally:
+        os.close(write_fd)
+    try:
+        return ctl(path, "configure-pin", "--secret-fd", str(read_fd), check=check, inherited=(read_fd,))
+    finally:
+        os.close(read_fd)
 
 
 class RunningService:
@@ -121,6 +133,42 @@ class ControlTests(unittest.TestCase):
         self.vault = Path(self.directory.name) / "vault.yq"
         self.socket = Path(self.directory.name) / "control.sock"
         cli("init", self.vault)
+
+    def test_desktop_pin_setup_persists_and_is_busy_during_browser_approval(self):
+        with service(self.vault, self.socket) as running:
+            self.assertFalse(configure_pin(self.socket, b"1234", check=False)["ok"])
+            path = running.unlock()
+            self.assertFalse(ctl(self.socket, "status")["pin_configured"])
+            self.assertTrue(configure_pin(self.socket, b"1234")["pin_configured"])
+            with deadline(20), open_device(path) as device:
+                ctap = Ctap2(device)
+                pin = ClientPin(ctap)
+                pin.get_pin_token("1234")
+                for _ in range(12):
+                    rejected = configure_pin(self.socket, b"5678", b"wrong", check=False)
+                    self.assertFalse(rejected["ok"])
+                    self.assertIn("incorrect", rejected["error"])
+                self.assertTrue(configure_pin(self.socket, b"5678", b"1234")["ok"])
+                pin = ClientPin(ctap)
+                token = pin.get_pin_token("5678")
+                digest = b"r" * 32
+                task = Task(lambda: ctap.make_credential(
+                    digest, {"id": "example.test"}, {"id": b"alice", "name": "alice"},
+                    [{"type": "public-key", "alg": -7}],
+                    pin_uv_protocol=1, pin_uv_param=pin.protocol.authenticate(token, digest)))
+                pending = running.pending()
+                rejected = configure_pin(self.socket, b"9999", b"5678", check=False)
+                self.assertFalse(rejected["ok"])
+                self.assertIn("in progress", rejected["error"])
+                ctl(self.socket, "approve", pending["token"])
+                task.finish()
+            ctl(self.socket, "lock")
+            path = running.unlock()
+            self.assertTrue(ctl(self.socket, "status")["pin_configured"])
+            with deadline(10), open_device(path) as device:
+                pin = ClientPin(Ctap2(device))
+                pin.get_pin_token("5678")
+                self.assertEqual(pin.get_pin_retries()[0], 8)
 
     def error(self, code, function):
         with self.assertRaises(CtapError) as caught:
