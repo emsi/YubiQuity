@@ -8,6 +8,13 @@ is used as a substitute for the full acceptance work.
 
 ## Current scope (2026-10-23)
 
+Vault capacity follow-up: the fixed 256-credential count limit is removed; the
+existing 1 MiB plaintext budget remains. Capacity rejection leaves the vault
+usable, while actual write failures still detach. New CTAP/persistence/copy tests,
+all 77 Rust tests, strict lint, eight real-device vault integration tests and the
+independent crypto test pass. See [capacity evidence](test-report.md#vault-capacity-and-unlocked-copy-verification-2026-10-23)
+and [vault behavior and secret storage](vault.md).
+
 Desktop follow-up is now partially implemented: a Qt 6 Widgets client uses
 `pinentry-qt` for vault secrets and native request-bound approval dialogs. The
 Rust client remains the sole Unix-socket/framing implementation. Versioned live

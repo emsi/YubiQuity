@@ -6,7 +6,7 @@ use yubiquity::authenticator::{Authenticator, CtapResult, Prompt, RequestContext
 use yubiquity::cbor::{self, bytes, int, map, text};
 use yubiquity::crypto::{RandomSource, SoftwareSigner};
 use yubiquity::hid::MAX_MESSAGE;
-use yubiquity::store::{MemoryStore, State, MAX_CREDENTIALS};
+use yubiquity::store::{MemoryStore, State};
 
 // Deliberately predictable test-only randomness, never linked into the daemon.
 struct TestRandom(u8);
@@ -75,7 +75,10 @@ fuzz_target!(|input: &[u8]| {
     if input.len() > MAX_MESSAGE + 1 {
         return;
     }
-    let mut auth = authenticator(initial_state());
+    let state = initial_state();
+    // One command can add at most one credential; getNextAssertion adds none.
+    let maximum_after_command = state.credentials.len() + 1;
+    let mut auth = authenticator(state);
     let mut context = Context { cancelled: false };
     let response = auth.execute(1, input, &mut context);
     assert!(!response.is_empty() && response.len() <= MAX_MESSAGE);
@@ -87,7 +90,7 @@ fuzz_target!(|input: &[u8]| {
         let next = auth.execute(channel, &[8], &mut context);
         assert!(!next.is_empty() && next.len() <= MAX_MESSAGE);
     }
-    assert!(auth.state().credentials.len() <= MAX_CREDENTIALS);
+    assert!(auth.state().credentials.len() <= maximum_after_command);
     if let Some(pin) = &auth.state().pin {
         assert!(pin.retries <= 8);
     }

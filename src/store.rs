@@ -2,8 +2,6 @@
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
-pub const MAX_CREDENTIALS: usize = 256;
-
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct User {
@@ -60,8 +58,13 @@ impl Drop for PinState {
     }
 }
 
-#[derive(Debug)]
-pub struct StoreError;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoreError {
+    /// Rejected before writing anything; existing state is still usable.
+    Full,
+    /// A storage failure may have uncertain durability and must latch closed.
+    Failed,
+}
 
 pub trait Store: Send {
     fn state(&self) -> &State;
@@ -95,10 +98,10 @@ impl<S: Store> Store for GuardedStore<S> {
     }
     fn commit(&mut self, next: State) -> Result<(), StoreError> {
         if self.failed {
-            return Err(StoreError);
+            return Err(StoreError::Failed);
         }
         let result = self.inner.commit(next);
-        self.failed = result.is_err();
+        self.failed = matches!(result, Err(StoreError::Failed));
         result
     }
 }

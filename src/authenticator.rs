@@ -3,9 +3,7 @@ use crate::cbor::{self, bytes, get, int, map, text};
 use crate::crypto::{CredentialSigner, OsRandom, RandomSource, SoftwareSigner};
 use crate::ctap::AAGUID;
 use crate::pin::PinRuntime;
-use crate::store::{
-    Credential, CredentialPolicy, GuardedStore, State, Store, User, MAX_CREDENTIALS,
-};
+use crate::store::{Credential, CredentialPolicy, GuardedStore, State, Store, StoreError, User};
 use ciborium::Value;
 use sha2::{Digest, Sha256};
 
@@ -290,16 +288,6 @@ impl<S: Store> Authenticator<S> {
         if !uv && self.store.state().pin.is_some() {
             return Err(Status::PinRequired);
         }
-        let replacing = resident
-            && self
-                .store
-                .state()
-                .credentials
-                .iter()
-                .any(|c| c.discoverable && c.rp_id == rp_id && c.user.id == user.id);
-        if !replacing && self.store.state().credentials.len() >= MAX_CREDENTIALS {
-            return Err(Status::KeyStoreFull);
-        }
         // Exclusion also requires approval: don't expose credential membership to
         // an unauthenticated caller through a presence-free registration query.
         context.presence(Prompt {
@@ -521,7 +509,10 @@ impl<S: Store> Authenticator<S> {
 
     fn commit(&mut self, next: State, context: &dyn RequestContext) -> CtapResult<()> {
         check_cancelled(context)?;
-        self.store.commit(next).map_err(|_| Status::Other)
+        self.store.commit(next).map_err(|error| match error {
+            StoreError::Full => Status::KeyStoreFull,
+            StoreError::Failed => Status::Other,
+        })
     }
 
     fn select_if_requested(

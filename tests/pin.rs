@@ -232,7 +232,7 @@ impl Store for FailWrite {
     fn commit(&mut self, next: State) -> Result<(), StoreError> {
         self.calls += 1;
         if self.calls == self.fail_at {
-            return Err(StoreError);
+            return Err(StoreError::Failed);
         }
         self.state = next;
         Ok(())

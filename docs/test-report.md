@@ -12,6 +12,40 @@ The user subsequently recreated the container with the supplied seccomp policy.
 Chrome is now runnable and the positive interoperability scenarios below pass.
 Host deployment remains outside authorized execution scope and unverified.
 
+## Vault capacity and unlocked-copy verification (2026-10-23)
+
+Removed the fixed 256-credential limit from registration and vault validation.
+The existing 1 MiB serialized-plaintext limit remains; the envelope is still v1.
+An oversized update is rejected before any temporary file is created and returns
+CTAP `KEY_STORE_FULL` for registration. It no longer poisons the storage guard or
+clears the active encryption key. Actual persistence failures still latch closed.
+The CTAP fuzz invariant now checks that a command can add at most one credential
+instead of depending on the removed global count cap.
+
+Passing checks:
+
+- `cargo test --all-targets --locked`: 77 tests. New cases create 300 credentials
+  through CTAP, use credentials on both sides of the former cap and replace a
+  resident credential without increasing the count; persist/reopen a 512-record
+  fixture; preserve the file/key and allow deletion after an oversized update;
+  and retain authentication/reset after a store-capacity rejection.
+- A deterministic file-copy test opens an encrypted source while its vault is
+  unlocked, commits a change that replaces the source pathname, then finishes
+  copying through the original descriptor. The copied file decrypts as the
+  complete earlier state while the original vault remains open with the new state.
+  Reopening a vault is also checked not to rewrite its file. These are local
+  filesystem semantics, not tests of network filesystems or synchronization tools.
+- Formatting and strict Clippy pass for the production and fuzz crates.
+- `scripts/desktop.sh build` rebuilds the canonical release backend successfully.
+- With `YUBIQUITY_TEST_BINARY="$PWD/target/host/release/yubiquity"`, all eight
+  `tests/vault_integration.py` cases pass through the real UHID/hidraw path,
+  including PIN retries, restart/SIGKILL, deletion and real write failures.
+  The independent Argon2/libsodium vault-format test also passes.
+
+Existing vaults need no migration. Old binaries retain their 256-record reader
+limit, so all computers need the update before using larger vaults. No user vault
+was opened, copied or modified by these tests. No host access occurred.
+
 ## Desktop build and launch correction (2026-10-23)
 
 The previous workspace tests exercised `target/desktop/yubiquity-desktop`, while

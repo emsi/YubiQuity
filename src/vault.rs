@@ -1,6 +1,6 @@
 //! Linux encrypted whole-vault store. All filesystem operations are relative to
 //! verified directory FDs, and an independent lock inode survives replacement.
-use crate::store::{State, Store, StoreError, MAX_CREDENTIALS};
+use crate::store::{State, Store, StoreError};
 use argon2::{Algorithm, Argon2, Block, Params, Version};
 use chacha20poly1305::{
     aead::{AeadInPlace, KeyInit},
@@ -38,6 +38,7 @@ pub enum VaultError {
     Authentication,
     InvalidState,
     Passphrase,
+    Full,
     Failed,
 }
 impl fmt::Display for VaultError {
@@ -63,6 +64,7 @@ impl fmt::Display for VaultError {
             Self::Passphrase => {
                 f.write_str("vault passphrase must be 12–1024 bytes, without NUL or line breaks")
             }
+            Self::Full => f.write_str("vault plaintext exceeds the 1 MiB size limit"),
             Self::Failed => f.write_str("vault stopped after a failed write; close and reopen it"),
         }
     }
@@ -144,9 +146,7 @@ struct Payload {
 }
 
 fn validate_state(state: &State) -> Result<()> {
-    if state.credentials.len() > MAX_CREDENTIALS
-        || state.pin.as_ref().is_some_and(|p| p.retries > 8)
-    {
+    if state.pin.as_ref().is_some_and(|p| p.retries > 8) {
         return Err(VaultError::InvalidState);
     }
     let mut ids = HashSet::new();
@@ -175,7 +175,10 @@ struct BoundedBuffer(Zeroizing<Vec<u8>>);
 impl Write for BoundedBuffer {
     fn write(&mut self, input: &[u8]) -> io::Result<usize> {
         if input.len() > MAX_PLAIN.saturating_sub(self.0.len()) {
-            return Err(io::Error::other("vault plaintext limit"));
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "vault plaintext limit",
+            ));
         }
         self.0.extend_from_slice(input);
         Ok(input.len())
@@ -372,6 +375,9 @@ impl Vault {
                 self.state = next;
                 Ok(())
             }
+            // Serialization checks capacity before creating a temporary file.
+            // A full vault must still allow signing, deletion and PIN retries.
+            Err(VaultError::Full) => Err(VaultError::Full),
             Err(error) => {
                 self.failed = true;
                 self.key.zeroize();
@@ -400,7 +406,13 @@ impl Vault {
                 state: next,
             },
         )
-        .map_err(|_| VaultError::InvalidState)?;
+        .map_err(|error| {
+            if error.io_error_kind() == Some(io::ErrorKind::FileTooLarge) {
+                VaultError::Full
+            } else {
+                VaultError::InvalidState
+            }
+        })?;
         let mut nonce = [0; 24];
         random(&mut nonce)?;
         let header = header(self.kdf, &self.salt, &nonce, buffer.0.len() + TAG_LEN);
@@ -474,9 +486,12 @@ impl Store for Vault {
     }
     fn commit(&mut self, next: State) -> std::result::Result<(), StoreError> {
         self.replace(next).map_err(|error| {
+            if matches!(error, VaultError::Full) {
+                return StoreError::Full;
+            }
             // Error variants contain no plaintext, passphrase, PIN, token or key.
             eprintln!("Vault commit failed; stopping credential operations: {error}");
-            StoreError
+            StoreError::Failed
         })
     }
 }

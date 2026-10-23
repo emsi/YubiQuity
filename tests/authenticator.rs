@@ -138,6 +138,41 @@ fn independent_keys_and_verifiable_assertion_structure() {
 }
 
 #[test]
+fn registration_exceeds_256_credentials_and_keeps_existing_keys_usable() {
+    let mut auth = Authenticator::software(MemoryStore::default(), 0);
+    let mut ctx = Consent::default();
+    let mut ids = Vec::new();
+    for account in 0u32..300 {
+        let response =
+            success(auth.execute(1, &make(&account.to_le_bytes(), account % 2 == 0), &mut ctx));
+        ids.push(registered(&response).0);
+    }
+    assert_eq!(auth.state().credentials.len(), 300);
+    for index in [0, 255, 256, 299] {
+        let response = success(auth.execute(
+            1,
+            &assertion("example.test", Some(&[ids[index].clone()]), true),
+            &mut ctx,
+        ));
+        assert_eq!(
+            get(get(&response, &int(1)).unwrap(), &text("id")),
+            Some(&bytes(&ids[index]))
+        );
+    }
+    // Resident replacement still replaces one record beyond the former cap.
+    success(auth.execute(1, &make(&256u32.to_le_bytes(), true), &mut ctx));
+    assert_eq!(auth.state().credentials.len(), 300);
+    assert_status(
+        auth.execute(
+            1,
+            &assertion("example.test", Some(&[ids[256].clone()]), true),
+            &mut ctx,
+        ),
+        Status::NoCredentials,
+    );
+}
+
+#[test]
 fn silent_probes_do_not_prompt_or_invent_up() {
     let mut auth = Authenticator::software(MemoryStore::default(), 0);
     let mut ctx = Consent::default();
@@ -282,8 +317,38 @@ impl Store for FailingStore {
         &self.0
     }
     fn commit(&mut self, _next: State) -> Result<(), StoreError> {
-        Err(StoreError)
+        Err(StoreError::Failed)
     }
+}
+
+struct OneCredentialStore(State);
+impl Store for OneCredentialStore {
+    fn state(&self) -> &State {
+        &self.0
+    }
+    fn commit(&mut self, next: State) -> Result<(), StoreError> {
+        if next.credentials.len() > 1 {
+            return Err(StoreError::Full);
+        }
+        self.0 = next;
+        Ok(())
+    }
+}
+
+#[test]
+fn capacity_rejection_does_not_disable_existing_credentials_or_reset() {
+    let mut auth = Authenticator::software(OneCredentialStore(State::default()), 0);
+    let mut ctx = Consent::default();
+    let (id, _) = registered(&success(auth.execute(1, &make(b"first", true), &mut ctx)));
+    assert_status(
+        auth.execute(1, &make(b"second", true), &mut ctx),
+        Status::KeyStoreFull,
+    );
+    assert!(auth.healthy());
+    assert_eq!(auth.state().credentials.len(), 1);
+    success(auth.execute(1, &assertion("example.test", Some(&[id]), true), &mut ctx));
+    assert_eq!(auth.execute(1, &[7], &mut ctx), [0]);
+    success(auth.execute(1, &make(b"after-reset", true), &mut ctx));
 }
 
 #[test]

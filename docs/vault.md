@@ -21,11 +21,19 @@ error. Structural corruption and unsupported versions have separate errors.
 
 Before deriving a key, the reader validates the fixed header, total size and KDF
 bounds: 16–128 MiB, 2–6 passes, and 1–4 lanes. Only production defaults are exposed
-by the CLI; the lower allowed boundary is used in unit tests. Plaintext is limited
-to 1 MiB, credentials to 256, IDs to 32 bytes, RP IDs to 253 bytes, user handles to
-64 bytes, and account metadata to 64 UTF-8 bytes per field. The versioned payload
+by the CLI; the lower allowed boundary is used in unit tests. There is no fixed
+credential-count cap. Serialized plaintext remains limited to 1 MiB, so capacity
+depends on record sizes. IDs are 32 bytes, RP IDs at most 253 bytes, user handles
+at most 64 bytes, and account metadata at most 64 UTF-8 bytes per field. The versioned payload
 rejects unknown fields/policies, invalid keys, duplicate IDs/resident identities,
 unsupported algorithms and impossible retry counts.
+
+A registration that would exceed the size budget returns CTAP `KEY_STORE_FULL`
+before any file is written. Existing credentials remain usable and can be deleted
+to recover space. Tests cover 300 registrations and reopening a 512-credential
+vault; these are verification cases, not new count limits. The file format is
+still v1. Older binaries with the former 256-record validation cap reject larger
+vaults, so update all computers before sharing one that exceeds that count.
 
 Passphrases must be 12–1024 bytes with no NUL or line breaks. This is an input
 constraint, not a claim that every 12-byte password is strong. Use a strong,
@@ -111,17 +119,57 @@ Each mutation follows this order:
 
 PIN retry decrements are committed before checking an attempted PIN; success
 resets retries through the same commit path before issuing a token. Registration
-is committed before returning success. If any commit fails, the encryption key
+is committed before returning success. If a storage write fails, the encryption key
 is cleared, subsequent credential commands are rejected, and the service detaches
 and exits nonzero. The user must reopen the vault to determine the stored state.
 In particular, rename followed by directory-sync failure has uncertain durability:
-the implementation never reports success in that case.
+the implementation never reports success in that case. A pre-write size-budget
+rejection is different: nothing changed on disk and the service stays usable.
 
 Ordinary failures clean up only their own temporary inode. SIGKILL/power loss
 during writing can leave an encrypted `.yubiquity-write-*` file; it is never loaded
 as a vault or automatically promoted on restart. No plaintext is written to disk.
 Tests inject failures at write, partial-write, file-sync, rename and directory-sync
 boundaries, and use a real file-size resource limit to force `EFBIG` in the daemon.
+
+## Copying while unlocked
+
+The vault data file stays encrypted while unlocked. Opening/unlocking, sitting
+idle, and locking do not rewrite its contents. The separate local lock file may
+be created on open. Registration, deletion, reset, PIN setup/change and persistent
+PIN retry updates do rewrite the data file. A successful PIN check normally
+commits both the retry decrement and reset; an assertion using an existing PIN
+token does not itself write, and signature counters remain zero.
+
+Locking the **source** is not required for a normal local file copy that opens
+the source once and reads that same descriptor to completion. Atomic replacement
+means the descriptor retains one complete encrypted version even if the pathname
+is replaced during the read. It can be an older snapshot and may miss subsequent
+registrations, deletions or PIN changes. Locking first gives a clear cutoff for
+the copy. This does not establish correctness for sync tools that reopen the
+path between chunks or for filesystems without the required atomic semantics.
+
+Stop the **destination** instance before replacing its vault. An open instance
+holds decrypted state in memory; it cannot adopt an external replacement, and
+its next attempted write rejects the changed inode. Copy only the encrypted data
+file, not the `.lock` file. Keep the destination directory/file private (`0700`/
+`0600`, owned by its local user). There is no merge or multi-computer locking.
+
+## Where the secrets live
+
+The vault passphrase is supplied at unlock, used by Argon2id, and then discarded
+with best-effort buffer clearing. It is not stored in settings, KWallet, a secret
+service or the vault. The GUI/pinentry, pipe and control request can contain
+temporary passphrase copies while unlocking.
+
+The derived 32-byte encryption key and decrypted credential private keys remain
+in the Rust daemon's memory while unlocked. The derived encryption key is not
+stored on disk; it is rederived from the passphrase and the public salt/KDF
+parameters in the vault header. Credential private keys and the security-key PIN
+verifier/retry state are encrypted inside the file. Locking or exiting drops
+the loaded state and clears sensitive buffers where practical. Memory is not
+locked against swapping, and this is not a guarantee that every transient copy
+has been erased.
 
 ## Locking, deletion and security limits
 

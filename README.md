@@ -75,6 +75,10 @@ available account. Browser security-key PIN prompts remain unchanged. Vault
 passphrases use `pinentry-qt`; they are not stored in settings or passed in
 command-line arguments. Settings remember only the selected vault path.
 
+Vaults have no fixed credential-count cap; the serialized plaintext budget is
+1 MiB. See [vault capacity, copying and secret storage](docs/vault.md) for the
+remaining limits and how the encrypted file behaves while unlocked.
+
 ```bash
 # Ubuntu 24.04 / compatible Debian systems, inside the environment being built:
 sudo apt-get install cmake pkg-config libxcb1-dev qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins qt6-wayland pinentry-qt

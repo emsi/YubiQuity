@@ -1,7 +1,7 @@
 use super::*;
 use crate::store::{Credential, CredentialPolicy, PinState, User};
 use std::fs;
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::os::unix::fs::{symlink, OpenOptionsExt, PermissionsExt};
 use tempfile::TempDir;
 
 const PASSWORD: &[u8] = b"a disposable test passphrase";
@@ -48,6 +48,94 @@ fn no_temporaries(directory: &Path) {
         .file_name()
         .as_bytes()
         .starts_with(b".yubiquity-write-")));
+}
+
+fn many_credentials(count: usize) -> State {
+    let mut state = sample();
+    let template = state.credentials[0].clone();
+    state.credentials = (0..count)
+        .map(|index| {
+            let mut credential = template.clone();
+            let index = (index as u64).to_le_bytes();
+            credential.id[..8].copy_from_slice(&index);
+            credential.user.id = index.to_vec();
+            credential
+        })
+        .collect();
+    state
+}
+
+#[test]
+fn more_than_256_credentials_survive_reopen_without_rewriting_the_file() {
+    let root = private_temp();
+    let path = root.path().join("credentials.yq");
+    let mut vault = create(&path);
+    vault.commit(many_credentials(512)).unwrap();
+    let before = fs::read(&path).unwrap();
+    let inode = fs::metadata(&path).unwrap().ino();
+    drop(vault);
+    let vault = Vault::open(&path, PASSWORD).unwrap();
+    assert_eq!(vault.state().credentials.len(), 512);
+    for index in [0, 255, 256, 511] {
+        let credential = &vault.state().credentials[index];
+        assert_eq!(credential.user.id, (index as u64).to_le_bytes());
+        assert_eq!(credential.private_key, [3; 32]);
+    }
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+    assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn oversized_update_preserves_file_key_and_ability_to_delete() {
+    let root = private_temp();
+    let path = root.path().join("credentials.yq");
+    let mut vault = create(&path);
+    vault.commit(sample()).unwrap();
+    let before = fs::read(&path).unwrap();
+    let inode = fs::metadata(&path).unwrap().ino();
+    assert_eq!(vault.commit(many_credentials(4096)), Err(StoreError::Full));
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+    assert!(!vault.failed);
+    assert!(vault.key.iter().any(|&byte| byte != 0));
+    assert_eq!(vault.state().credentials.len(), 1);
+    no_temporaries(root.path());
+    vault.remove_credential(&[0x41; 32]).unwrap();
+    drop(vault);
+    assert!(Vault::open(&path, PASSWORD)
+        .unwrap()
+        .state()
+        .credentials
+        .is_empty());
+}
+
+#[test]
+fn copying_an_open_vault_through_one_file_handle_reads_a_complete_snapshot() {
+    let root = private_temp();
+    let path = root.path().join("credentials.yq");
+    let copy_path = root.path().join("copied.yq");
+    let mut vault = create(&path);
+    vault.commit(sample()).unwrap();
+    let before = fs::read(&path).unwrap();
+    let mut reader = File::open(&path).unwrap();
+    // A real commit replaces the pathname after the copy opened its input.
+    let mut next = vault.state().clone();
+    next.pin.as_mut().unwrap().retries = 7;
+    vault.commit(next).unwrap();
+    let mut copy = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&copy_path)
+        .unwrap();
+    io::copy(&mut reader, &mut copy).unwrap();
+    copy.sync_all().unwrap();
+    drop(copy);
+    assert_eq!(fs::read(&copy_path).unwrap(), before);
+    let copied_vault = Vault::open(&copy_path, PASSWORD).unwrap();
+    assert_eq!(copied_vault.state().pin.as_ref().unwrap().retries, 8);
+    assert_eq!(copied_vault.state().credentials[0].private_key, [3; 32]);
+    assert_eq!(vault.state().pin.as_ref().unwrap().retries, 7);
 }
 
 #[test]
