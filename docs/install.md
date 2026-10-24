@@ -4,14 +4,15 @@ The binary package targets **Ubuntu 24.04, amd64/x86-64**, including KDE X11
 and Wayland. It contains the matching GUI and backend; apt installs the runtime
 dependencies. No Rust toolchain or browser download is needed to install it.
 
-**Version note:** this checkout introduces guided onboarding in **0.2.0**.
-The previously published 0.1.0 package does not have it. Until a 0.2.0 release is
-published, use the package built from this checkout as described below.
+**Version 0.2.0** includes guided onboarding in the existing desktop application.
+If you installed 0.1.0, choose **Lock and quit**, install the new package, then
+reopen YubiQuity. Your existing vault and PIN remain usable.
 
 ## First installation
 
-1. Download the package from [GitHub Releases](https://github.com/emsi/YubiQuity/releases)
-   when 0.2.0 is available, or use a locally built package. Install it with:
+1. Download `yubiquity_0.2.0-1_amd64.deb` from
+   [the v0.2.0 release](https://github.com/emsi/YubiQuity/releases/tag/v0.2.0).
+   In the download directory, install it with:
 
    ```bash
    sudo apt install ./yubiquity_0.2.0-1_amd64.deb
