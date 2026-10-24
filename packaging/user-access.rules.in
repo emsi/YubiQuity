@@ -1,0 +1,6 @@
+# Managed by yubiquity-setup: explicit account device access.
+# The UID comes from the authenticated account, never an arbitrary rule argument.
+ACTION!="add|change", GOTO="yubiquity_user_@UID@_end"
+SUBSYSTEM=="misc", KERNEL=="uhid", TAG-="uaccess", RUN+="/usr/bin/setfacl -m u:@UID@:rw -- $devnode"
+SUBSYSTEM=="hidraw", DEVPATH=="/devices/virtual/misc/uhid/*/hidraw/hidraw*", SUBSYSTEMS=="hid", KERNELS=="0003:FFFF:0001.*", ATTRS{uevent}=="*HID_NAME=YubiQuity Software FIDO2*", ATTRS{uevent}=="*HID_UNIQ=yubiquity-*", TAG-="uaccess", RUN+="/usr/bin/setfacl -m u:@UID@:rw -- $devnode"
+LABEL="yubiquity_user_@UID@_end"

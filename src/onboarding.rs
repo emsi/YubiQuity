@@ -17,6 +17,7 @@ pub struct Report {
     checks: Vec<Check>,
     pub repair_device: bool,
     pub repair_firefox: bool,
+    // Retained for version-1 report readers. ACL-based setup never requires it.
     pub restart_session: bool,
 }
 impl Report {
@@ -91,41 +92,21 @@ pub fn inspect(probe: bool, helper: Option<&Path>) -> Report {
         restart_session: false,
     };
     let access = Device::preflight();
-    // id with no user reports this process's groups; with a UID it queries the
-    // account database. A saved membership alone does not refresh KDE/browser.
-    let current = command("/usr/bin/id", &["-nG"]);
-    // SAFETY: geteuid takes no pointers and has no preconditions.
-    let uid = unsafe { libc::geteuid() }.to_string();
-    let saved = command("/usr/bin/id", &["-nG", "--", &uid]);
-    let member = |s: &str| s.split_whitespace().any(|g| g == "yubiquity");
-    if let (Ok(current), Ok(saved)) = (&current, &saved) {
-        report.restart_session = member(saved) && !member(current);
-        if report.restart_session {
-            report.add("session", "Desktop session", "attention", "Access has already been granted to your account, but this desktop session has the old groups. Save your work and reboot once, then reopen YubiQuity. Repeating setup will not refresh this session.");
-        } else if member(current) {
-            report.add("session", "Desktop session", "ok", "This application has the yubiquity access group. An older browser process may still need restarting.");
-        }
-    }
-    report.repair_device = access.is_err() && !report.restart_session;
+    // Test real access, including ACLs. Saved or stale group membership must
+    // neither imply access nor hide the action that can repair it immediately.
+    report.repair_device = access.is_err();
     match access.as_ref() {
         Ok(()) => report.add(
             "uhid",
-            "Create a software security key",
+            "Security-key access",
             "ok",
             "This application can open /dev/uhid.",
         ),
         Err(e) => report.add(
             "uhid",
-            "Create a software security key",
+            "Security-key access",
             "attention",
-            format!(
-                "{}\n{e:#}",
-                if report.restart_session {
-                    "Refresh your desktop session first."
-                } else {
-                    "Choose Configure device access below."
-                }
-            ),
+            format!("Choose Enable access. Administrator authentication grants access in this session; no logout or reboot is needed.\n{e:#}"),
         ),
     }
     for (name, expected) in [
@@ -168,8 +149,8 @@ pub fn inspect(probe: bool, helper: Option<&Path>) -> Report {
                 device = Some(key);
             }
             Err(e) => {
-                report.repair_device = !report.restart_session;
-                report.add("hidraw", "Browser-facing device", "attention", format!("Could not open the new device. Configure device access, then check again.\n{e:#}"));
+                report.repair_device = true;
+                report.add("hidraw", "Browser-facing device", "attention", format!("Could not open the new device. Choose Enable access, then check again.\n{e:#}"));
             }
         }
     } else {
@@ -191,7 +172,7 @@ pub fn inspect(probe: bool, helper: Option<&Path>) -> Report {
                                 Ok(properties) if has_snap_tag(&properties) => report.add("firefox-device", "Firefox Snap device permission", "ok", "The temporary key has Firefox's current Snap device tag. Restart Firefox after repairs and verify with a browser test."),
                                 Ok(_) => {
                                     report.repair_firefox = true;
-                                    report.add("firefox-device", "Firefox Snap device permission", "attention", "Firefox's Snap device tag is missing. Choose Enable Firefox Snap below, then check again. If this persists, review any local rule override reported above.");
+                                    report.add("firefox-device", "Firefox Snap device permission", "attention", "Firefox's Snap device tag is missing. Choose Allow Firefox Snap, then check again. If this persists, review any local rule override reported above.");
                                 }
                                 Err(e) => report.add("firefox-device", "Firefox Snap device permission", "unknown", e),
                             }
@@ -201,7 +182,7 @@ pub fn inspect(probe: bool, helper: Option<&Path>) -> Report {
                     }
                     Ok(_) => {
                         report.repair_firefox = true;
-                        report.add("firefox-interface", "Firefox Snap connection", "attention", "Firefox Snap is installed but its security-key interface is disconnected. Choose Enable Firefox Snap below.");
+                        report.add("firefox-interface", "Firefox Snap connection", "attention", "Firefox Snap is installed but its security-key interface is disconnected. Choose Allow Firefox Snap.");
                     }
                     Err(e) => {
                         report.add("firefox-interface", "Firefox Snap connection", "unknown", e)

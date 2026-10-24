@@ -137,14 +137,12 @@ private slots:
         {{"version", 1},
          {"checks",
           QJsonArray{
-              QJsonObject{{"title", "Desktop session"},
-                          {"status", "ok"},
-                          {"detail", "Current access group is active."}},
-              QJsonObject{{"title", "Create a software security key"},
+              QJsonObject{{"id", "uhid"},
+                          {"title", "Security-key access"},
                           {"status", "ok"},
                           {"detail", "UHID is accessible."}},
               QJsonObject{
-                  {"title", "Browser-facing device"},
+                  {"id", "hidraw"}, {"title", "Browser-facing device"},
                   {"status", "ok"},
                   {"detail", "A temporary device was opened and detached."}},
               QJsonObject{{"title", "Firefox Snap connection"},
@@ -262,6 +260,30 @@ private slots:
     page.showReport(
         {{"version", 1}, {"checks", QJsonArray{}}, {"repair_firefox", false}});
     QVERIFY(page.findChild<QPushButton *>("setupFirefox")->isHidden());
+    // One actionable summary; raw process details stay behind a disclosure.
+    page.showReport(
+        {{"version", 1}, {"repair_device", true},
+         {"checks", QJsonArray{QJsonObject{
+             {"id", "uhid"}, {"title", "Security-key access"},
+             {"status", "attention"},
+             {"detail", "cannot open /dev/uhid\nGroups:\t1000"}}}}});
+    QVERIFY(!page.findChild<QPushButton *>("setupDevice")->isHidden());
+    auto summary = page.findChild<QLabel *>("setupChecks")->text();
+    QVERIFY(summary.contains("No logout or reboot"));
+    QVERIFY(!summary.contains("/dev/uhid"));
+    QVERIFY(!summary.contains("Groups:"));
+    QVERIFY(checks->isHidden());
+    QVERIFY(checks->text().contains("Groups: 1000"));
+    QVERIFY(!checks->text().contains("\\u0009"));
+    page.findChild<QPushButton *>("setupShowDetails")->click();
+    QVERIFY(!checks->isHidden());
+    page.showReport(
+        {{"version", 1}, {"checks", QJsonArray{
+             QJsonObject{{"id", "uhid"}, {"status", "ok"}},
+             QJsonObject{{"id", "hidraw"}, {"status", "ok"}}}}});
+    QCOMPARE(page.findChild<QLabel *>("setupChecks")->text(),
+             QString("Access is ready. Continue with your vault below."));
+    QVERIFY(page.findChild<QPushButton *>("setupDevice")->isHidden());
   }
   void nativePinentryCancel() {
     if (!qEnvironmentVariableIsSet("YUBIQUITY_NATIVE_TEST"))

@@ -72,6 +72,7 @@ def main():
             install(source, target, 0o755)
             subprocess.run(["strip", "--strip-unneeded", str(target)], check=True)
         install(ROOT / "packaging/yubiquity-setup", tree / "usr/sbin/yubiquity-setup", 0o755)
+        install(ROOT / "packaging/user-access.rules.in", tree / "usr/share/yubiquity/user-access.rules.in")
         install(ROOT / "packaging/polkit/org.yubiquity.setup.policy", tree / "usr/share/polkit-1/actions/org.yubiquity.setup.policy")
         install(ROOT / "desktop/org.yubiquity.Desktop.desktop", tree / "usr/share/applications/org.yubiquity.Desktop.desktop")
         for rule in (ROOT / "packaging/udev").glob("*.rules"):
@@ -98,7 +99,7 @@ def main():
                               "-e" + str(tree / "usr/bin/yubiquity-desktop"), cwd=work)
         dependencies = next(line.removeprefix("shlibs:Depends=") for line in dependencies.splitlines()
                             if line.startswith("shlibs:Depends="))
-        dependencies += ", pinentry-qt, qt6-qpa-plugins, qt6-wayland, fido2-tools, udev, kmod, passwd, pkexec, polkitd"
+        dependencies += ", pinentry-qt, qt6-qpa-plugins, qt6-wayland, fido2-tools, udev, kmod, passwd, acl, pkexec, polkitd"
         size = sum(p.stat().st_size for p in (tree / "usr").rglob("*") if p.is_file())
         (control / "control").write_text(
             f"Package: yubiquity\nVersion: {version}-1\nArchitecture: amd64\n"

@@ -3,7 +3,7 @@
 **Installed the `.deb`?** Start with [the short installation guide](install.md).
 The packaged application provides guided setup in the existing GUI, including
 native administrator prompts, Firefox Snap diagnostics and PIN setup. The manual
-rule/group instructions below are for source installations and troubleshooting;
+additional instructions below cover source builds and troubleshooting;
 the package already installs both udev rules.
 
 
@@ -45,7 +45,7 @@ install the packages in the next section once. For a build without a window:
 ./scripts/desktop.sh build
 ```
 
-On first run, follow **Setup and browser checks**, then click **Done**. On later
+On first run, follow **Setup**, then click **Done**. On later
 unlocks it hides to the tray; browser requests
 open a separate **Approve / Cancel** window. Follow the workspace checks below.
 
@@ -157,76 +157,31 @@ the container's browser automation tools and downloads separate browsers.
 
 ## 2. Set up host device access once
 
-Still in the checkout, create the dedicated access group and add yourself:
+Use the current `.deb` for host integration, even if you run a locally built
+GUI/backend. It installs the root-owned setup helper, device rules and module
+configuration. Follow [installation](install.md), then choose **Setup → Enable
+access** and authenticate in the desktop administrator prompt. An administrator
+can also run:
 
 ```bash
-yubiquity_user=$(id -un)
-getent group yubiquity || sudo groupadd --system yubiquity
-sudo usermod -aG yubiquity "$yubiquity_user"
+sudo yubiquity-setup "$(id -un)"
 ```
 
-Verify the saved **host account** membership:
+Starting with 0.2.2, this grants your UID a persistent device ACL. It works for
+processes already running in your desktop session, including browsers. No new
+group membership, `newgrp`, logout or reboot is required. Existing group-based
+setups remain supported. The helper preserves customized rules; inspect **Show
+details** if a local rule prevents access.
+
+Only grant this to trusted users: `/dev/uhid` permits creating other kinds of HID
+devices too, including input devices. Hidraw access is scoped to YubiQuity's
+matching virtual keys, not every security key on the computer.
+
+Verify actual access as your normal user:
 
 ```bash
-getent group yubiquity
-id -nG "$(id -un)"
-```
-
-The named-user `id` command must include `yubiquity`. Plain `id` without a
-username instead shows the running shell's groups, which may still be old.
-Changing group membership inside the container does not update the host account.
-
-Only add trusted users. Access to `/dev/uhid` permits creating other kinds of HID
-devices too, including input devices. The supplied rule grants hidraw access only
-to this project's matching virtual devices, not every security key on the host.
-
-Install the rule without overwriting an existing installation:
-
-```bash
-if sudo test -e /etc/udev/rules.d/72-yubiquity.rules; then
-    sudo diff -u /etc/udev/rules.d/72-yubiquity.rules packaging/udev/72-yubiquity.rules
-else
-    sudo install -m 0644 packaging/udev/72-yubiquity.rules /etc/udev/rules.d/72-yubiquity.rules
-fi
-```
-
-If the comparison prints differences, stop and review the existing rule before
-continuing. Otherwise:
-
-```bash
-sudo modprobe uhid
-sudo udevadm control --reload-rules
-sudo udevadm trigger --action=change /sys/class/misc/uhid
-sudo udevadm settle
-```
-
-### Activate and verify the new group
-
-Logging out and back in can refresh group membership, but **does not guarantee
-it on KDE**: the systemd user manager can survive logout and launch processes
-with its old groups. See [systemd's user-manager lifetime](https://www.freedesktop.org/software/systemd/man/255/logind.conf.html#UserStopDelaySec=).
-After login, check plain `id -nG` in each terminal. If it still lacks `yubiquity`
-despite the account check above succeeding, save your work and reboot the host
-to refresh the whole desktop, or use the following no-reboot route.
-
-For the no-reboot route, run this command **on its own** in each of Terminal A
-and Terminal B:
-
-```bash
-newgrp yubiquity
-```
-
-It opens a new shell. **Wait for its prompt, then paste the next block separately.**
-Do not paste `newgrp` and the checks together: the remaining commands may wait
-in the old shell instead of running in the new one. Keep using these updated
-shells for the rest of the walkthrough; other terminals are not updated.
-
-Whether you used a fresh login, reboot, or `newgrp`, run this check in both
-terminals before continuing:
-
-```bash
-id
 stat -c '%A %U:%G (%u:%g) %n' /dev/uhid
+getfacl -p /dev/uhid
 if test -r /dev/uhid && test -w /dev/uhid; then
     echo 'UHID access OK'
 else
@@ -234,17 +189,11 @@ else
 fi
 ```
 
-Expect `yubiquity` among your groups, and `/dev/uhid` owned by `root:yubiquity`
-with mode `0660` (`crw-rw----`). Continue only after `UHID access OK`. If it prints
-`DENIED`, keep the complete `id` and `stat` output for diagnosis rather than
-assuming the group change worked. If the node is missing after a reboot, run
-`sudo modprobe uhid` and repeat the check.
-
-`newgrp` does **not** update an already-running browser or KDE's application
-launcher. If you used this route, fully quit the browser, including background
-instances, and launch it from updated Terminal B (for example, `firefox &`).
-Opening another window of an old browser process does not refresh its groups.
-Run both the authenticator and browser **without sudo**.
+The named-user ACL grants access even when `id` does not list `yubiquity`.
+Continue after `UHID access OK`. If access is denied, return to **Setup → Enable
+access**, then copy **Show details** if it still fails. Run the authenticator
+and browser as your normal user. Firefox Snap authorization is a separate step
+below and may require fully restarting Firefox after its permissions change.
 
 ## 3. Terminal A: create and unlock a test vault
 
@@ -297,7 +246,7 @@ The list should include the YubiQuity device. Information should identify a FIDO
 authenticator with resident-key and ClientPIN support. Before changing anything,
 make sure the path is YubiQuity's, **not a physical security key**.
 
-GUI users can instead unlock the vault and choose **Setup and browser checks →
+GUI users can instead unlock the vault and choose **Setup →
 Set security-key PIN**. This does not require `fido2-token` or a device path.
 
 For the terminal workflow, set a PIN once for this vault:
@@ -326,7 +275,8 @@ Other Snap versions may have different device rules. If access already works
 and the Firefox tag is present, do not repeat the setup.
 
 Snap requires both a connected `u2f-devices` interface and per-device
-authorization, in addition to the ordinary `yubiquity` group permissions.
+authorization, in addition to ordinary device permissions (the per-user ACL
+or a legacy `yubiquity` group grant).
 [snapd 2.77.1's rules](https://github.com/canonical/snapd/blob/2.77.1/interfaces/builtin/u2f_devices.go#L246)
 match USB-parent vendor/product attributes. UHID has a virtual HID parent, not
 a USB device parent, so our device does not match those rules even when udev
@@ -355,7 +305,7 @@ sudo snap connect firefox:u2f-devices
 ```
 
 If `CURRENT_TAGS` lacks `snap_firefox_firefox`, packaged users should first use
-**Setup and browser checks → Enable Firefox Snap**, lock/unlock the vault and
+**Setup → Allow Firefox Snap**, lock/unlock the vault and
 restart Firefox. The package already supplies the scoped rule in `/usr/lib`.
 The manual installation below is for source builds or an administrator reviewing
 a local override; do not add a duplicate `/etc` rule just because you installed
@@ -380,7 +330,7 @@ or replace the existing `72-yubiquity.rules`. Snap's
 [tagging/hotplug implementation](https://github.com/canonical/snapd/blob/2.77.1/interfaces/udev/spec.go#L102)
 uses this tag to grant access to the matching device. This is an explicit host
 administrator permission grant for Firefox and the matching virtual device,
-not proof of device identity. Ordinary group permissions remain necessary;
+not proof of device identity. Ordinary device permissions remain necessary;
 this does not grant Firefox `/dev/uhid` access, make devices world-writable,
 or disable confinement.
 
@@ -522,10 +472,10 @@ vault will not contain these test credentials.
 | Symptom | Check |
 | --- | --- |
 | `/dev/uhid` is missing | Run `sudo modprobe uhid`; if it fails, check host kernel UHID/HIDRAW support. |
-| Account belongs to `yubiquity`, but plain `id` does not show it | The running shell has stale groups. Use the separate `newgrp` step above or save your work and reboot; KDE logout/login may not refresh them. |
-| Permission denied opening UHID or hidraw | Compare current numeric groups from `id` with device ownership from `stat`, check the installed rule, and repeat the explicit access check above. Do not run the browser or daemon as root. |
+| An older version requests a group refresh or reboot | Upgrade to 0.2.2 or later and choose **Setup → Enable access**. The account ACL takes effect in the current session. |
+| Permission denied opening UHID or hidraw | Choose **Setup → Enable access**, then check actual access and ACLs as shown above. Inspect **Show details** for local rule overrides. |
 | No YubiQuity device while locked | Expected. It exists only while the unlocked daemon is attached. |
-| CLI sees the device, browser does not | Verify the security-key route. For Snap Firefox, check both the interface connection and device tag using the [Snap requirements](#ubuntu-firefox-installed-as-a-snap). If you used `newgrp`, fully quit the browser and launch it from the updated shell, not KDE's menu. Do not disable its sandbox. |
+| CLI sees the device, browser does not | Verify the security-key route. For Snap Firefox, check both the interface connection and device tag using the [Snap requirements](#ubuntu-firefox-installed-as-a-snap). Do not disable its sandbox. |
 | Snap Firefox waits for a touch but Terminal A prints no `APPROVAL` | A successful `fido2-token -S` does not establish Snap access. Check for `snap_firefox_firefox` in `CURRENT_TAGS`, apply the scoped rule if missing, then fully quit/reopen Firefox. If the tag is already present and restarting does not help, collect the package/version and error; do not assume permissions are the only possible cause. |
 | `No pending request matches that approval token` | Enter `approve` followed by the actual complete token printed after `APPROVAL`, not the word `TOKEN`. If the request expired or was cancelled, retry on the site and use the new token. |
 | Vault path rejected | Its immediate directory must be yours and `0700`; user-owned `0775` ancestors are allowed. Inspect with `namei -l "$yubiquity_vault"` and check the remaining [vault requirements](vault.md). Do not recursively change home-directory permissions. |

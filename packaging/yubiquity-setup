@@ -1,4 +1,5 @@
 #!/bin/sh
+# YubiQuity device access: user-acl-v1
 # Small, root-owned installation helper. No vaults, secrets or user-supplied paths.
 set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -35,16 +36,43 @@ if [ "$task_action" != all ] && [ "$task_uid" -ne "$PKEXEC_UID" ]; then
     exit 1
 fi
 if [ "$task_action" != firefox ]; then
-    getent group yubiquity >/dev/null || groupadd --system yubiquity
-    usermod -a -G yubiquity -- "$task_user"
+    # A named-user ACL takes effect for existing processes, including browsers.
+    # Keep the rule root-owned and atomic; only the UID resolved above is inserted.
+    # The template matches exactly UHID and YubiQuity's matching hidraw nodes.
+    # It works alongside older group rules as well as the current package rules.
+    task_rule="/etc/udev/rules.d/73-yubiquity-user-$task_uid.rules"
+    mkdir -p /etc/udev/rules.d
+    task_temporary=$(mktemp /etc/udev/rules.d/.yubiquity-access-XXXXXX)
+    trap 'rm -f -- "$task_temporary"' EXIT
+    trap 'exit 1' HUP INT TERM
+    sed "s/@UID@/$task_uid/g" /usr/share/yubiquity/user-access.rules.in > "$task_temporary"
+    if [ -e "$task_rule" ] || [ -L "$task_rule" ]; then
+        if [ -L "$task_rule" ] || ! cmp -s "$task_temporary" "$task_rule"; then
+            printf 'Local access rule differs: %s. Ask an administrator to review it; it was not overwritten.\n' "$task_rule" >&2
+            exit 1
+        fi
+    else
+        chmod 0644 "$task_temporary"
+        mv -T -- "$task_temporary" "$task_rule"
+    fi
+    rm -f -- "$task_temporary"
+    trap - EXIT HUP INT TERM
     if [ ! -e /sys/class/misc/uhid ]; then modprobe uhid; fi
 fi
 # Reapply installed rules, preserving all locally customized files.
 udevadm control --reload-rules
 if [ "$task_action" != firefox ] || [ -e /sys/class/misc/uhid ]; then
     udevadm trigger --action=change /sys/class/misc/uhid
+    # Refresh existing UHID children, including ones created before the new
+    # rules. The scoped rule still confines ACL grants to YubiQuity devices.
+    udevadm trigger --action=change --subsystem-match=hidraw --parent-match=/sys/devices/virtual/misc/uhid
 fi
 udevadm settle --timeout=15
+if [ "$task_action" != firefox ]; then
+    # Report a real failure if the ACL cannot be applied. This also grants UHID
+    # immediately if udev was unable to apply the event.
+    setfacl -m "u:$task_uid:rw" -- /dev/uhid
+fi
 if [ "$task_action" = firefox ] && ! command -v snap >/dev/null 2>&1; then
     echo 'Snap is not installed. No Firefox Snap connection can be configured.' >&2
     exit 1
@@ -70,5 +98,9 @@ SNAPS
     fi
 fi
 printf 'Setup completed for %s.\n' "$task_user"
-printf '%s\n' 'Use Check again in YubiQuity. If desktop groups are stale, save your work and reboot once.' \
-    'After Firefox repairs, lock/unlock YubiQuity and restart Firefox to recreate device access.'
+if [ "$task_action" != firefox ]; then
+    printf '%s\n' 'Device access is enabled for your account now. No logout or reboot is needed.'
+fi
+if [ "$task_action" != device ]; then
+    printf '%s\n' 'After Firefox repairs, lock/unlock YubiQuity and restart Firefox to recreate Snap access.'
+fi

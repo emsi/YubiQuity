@@ -12,7 +12,7 @@ sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recom
     build-essential pkg-config libudev-dev libssl-dev fido2-tools \
     python3-fido2 python3-venv python3-pil python3-argon2 python3-nacl \
     python3-gi gir1.2-umockdev-1.0 umockdev \
-    xvfb xauth xdotool tesseract-ocr tesseract-ocr-eng kmod udev usbutils \
+    xvfb xauth xdotool tesseract-ocr tesseract-ocr-eng kmod udev acl usbutils \
     libgtk-3-0t64 libdbus-glib-1-2 libasound2t64 libnss3 libgbm1 \
     libxss1 libxtst6 libx11-xcb1 ca-certificates curl xz-utils unzip jq
 

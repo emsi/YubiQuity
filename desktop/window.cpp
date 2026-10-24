@@ -66,7 +66,7 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
   tabs->setObjectName("mainTabs");
   tabs->addTab(body, tr("Vault"));
   setup = new SetupPage(backend, helper);
-  tabs->addTab(setup, tr("Setup and browser checks"));
+  tabs->addTab(setup, tr("Setup"));
   setCentralWidget(tabs);
   connect(setup, &SetupPage::createVault, this, [this] { selectVault(true); });
   connect(setup, &SetupPage::openVault, this, [this] { selectVault(false); });
@@ -129,7 +129,11 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
     serviceError = serviceError.right(16384);
   });
   connect(&service, &QProcess::finished, this, [this] {
-    if (!stopping)
+    if (!stopping && serviceError.contains("cannot open /dev/uhid")) {
+      failure(tr("Device access needs setup. Choose Enable access in the "
+                 "Setup tab, then unlock your vault again."));
+      tabs->setCurrentIndex(1);
+    } else if (!stopping)
       failure(tr("The device service stopped.\n%1")
                   .arg(QString::fromUtf8(serviceError).trimmed()));
   });

@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -41,6 +42,58 @@ def copy_binary(root, path):
 
 
 class UdevBehaviorTests(unittest.TestCase):
+    def test_acl_grants_an_already_running_process_access_without_new_groups(self):
+        self.assertEqual(os.geteuid(), 0)
+        with tempfile.TemporaryDirectory(prefix="yubiquity-acl-") as temporary:
+            root = Path(temporary)
+            root.chmod(0o755)
+            node = root / "device"
+            # Private duplicate of the harmless null device, never host UHID.
+            os.mknod(node, stat.S_IFCHR | 0o600, os.makedev(1, 3))
+            requests_read, requests_write = os.pipe()
+            replies_read, replies_write = os.pipe()
+            pid = os.fork()
+            if pid == 0:
+                os.close(requests_write)
+                os.close(replies_read)
+                try:
+                    os.setgroups([])
+                    os.setgid(42420)
+                    os.setuid(42420)
+                    with os.fdopen(requests_read) as requests, os.fdopen(replies_write, "w", buffering=1) as replies:
+                        for _ in requests:
+                            try:
+                                descriptor = os.open(node, os.O_RDWR)
+                                os.close(descriptor)
+                                allowed = True
+                            except PermissionError:
+                                allowed = False
+                            replies.write(f"{allowed}:{os.getgroups()}\n")
+                    os._exit(0)
+                except BaseException:
+                    os._exit(1)
+            os.close(requests_read)
+            os.close(replies_write)
+            try:
+                with os.fdopen(requests_write, "w", buffering=1) as requests, os.fdopen(replies_read) as replies:
+                    requests.write("check\n")
+                    self.assertEqual(replies.readline(), "False:[]\n")
+                    subprocess.run(["setfacl", "-m", "u:42420:rw", "--", str(node)], check=True)
+                    requests.write("check\n")
+                    self.assertEqual(replies.readline(), "True:[]\n")
+                    # Recreated nodes are denied until the udev ACL action runs.
+                    node.unlink()
+                    os.mknod(node, stat.S_IFCHR | 0o600, os.makedev(1, 3))
+                    requests.write("check\n")
+                    self.assertEqual(replies.readline(), "False:[]\n")
+                    subprocess.run(["setfacl", "-m", "u:42420:rw", "--", str(node)], check=True)
+                    requests.write("check\n")
+                    self.assertEqual(replies.readline(), "True:[]\n")
+                    self.assertEqual(node.stat().st_mode & 0o007, 0)
+            finally:
+                _, status = os.waitpid(pid, 0)
+            self.assertEqual(status, 0)
+
     def run_rule(self, *, name="YubiQuity Software FIDO2", unique="yubiquity-test",
                  hid=HID, action="add", target="hidraw"):
         self.assertEqual(os.geteuid(), 0, "run this isolated fixture with sudo -n /usr/bin/python3")
@@ -54,6 +107,8 @@ class UdevBehaviorTests(unittest.TestCase):
             (root / "etc/passwd").write_text("root:x:0:0:root:/:/bin/false\n")
             (root / "etc/nsswitch.conf").write_text("passwd: files\ngroup: files\n")
             shutil.copyfile(ROOT / "packaging/udev/72-yubiquity.rules", root / "etc/udev/rules.d/72-yubiquity.rules")
+            (root / "etc/udev/rules.d/73-yubiquity-user-1000.rules").write_text(
+                (ROOT / "packaging/user-access.rules.in").read_text().replace("@UID@", "1000"))
             # A later assignment must not override the final group/mode; an
             # earlier generic uaccess tag must be removed for matching devices.
             (root / "etc/udev/rules.d/70-fixture.rules").write_text('SUBSYSTEM=="hidraw", TAG+="uaccess"\n')
@@ -93,15 +148,17 @@ class UdevBehaviorTests(unittest.TestCase):
         for action in ("add", "change"):
             with self.subTest(action=action):
                 output = self.run_rule(action=action)
-                self.assertRegex(output, r"72-yubiquity\.rules:9 GROUP 4242")
-                self.assertRegex(output, r"72-yubiquity\.rules:9 MODE 0660")
+                self.assertRegex(output, r"72-yubiquity\.rules:\d+ GROUP 4242")
+                self.assertRegex(output, r"72-yubiquity\.rules:\d+ MODE 0660")
                 self.assertNotRegex(output, r"99-fixture\.rules:1 (GROUP|MODE)")
                 self.assertNotIn("CURRENT_TAGS=:uaccess:", output)
+                self.assertIn("run: '/usr/bin/setfacl -m u:1000:rw -- /dev/hidraw4242'", output)
 
     def test_uhid_rule_matches(self):
         output = self.run_rule(target="uhid")
-        self.assertRegex(output, r"72-yubiquity\.rules:4 GROUP 4242")
-        self.assertRegex(output, r"72-yubiquity\.rules:4 MODE 0660")
+        self.assertRegex(output, r"72-yubiquity\.rules:\d+ GROUP 4242")
+        self.assertRegex(output, r"72-yubiquity\.rules:\d+ MODE 0660")
+        self.assertIn("run: '/usr/bin/setfacl -m u:1000:rw -- /dev/uhid'", output)
 
     def test_other_devices_and_remove_events_do_not_get_project_access(self):
         for parameters in ({"name": "Unrelated device"}, {"unique": "other-instance"},
@@ -110,7 +167,8 @@ class UdevBehaviorTests(unittest.TestCase):
                            {"action": "remove"}):
             with self.subTest(parameters=parameters):
                 output = self.run_rule(**parameters)
-                self.assertNotRegex(output, r"72-yubiquity\.rules:9 (GROUP|MODE)")
+                self.assertNotRegex(output, r"72-yubiquity\.rules:\d+ (GROUP|MODE)")
+                self.assertNotIn("run: '/usr/bin/setfacl", output)
                 self.assertIn("CURRENT_TAGS=:uaccess:", output)
 
 

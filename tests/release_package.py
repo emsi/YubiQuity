@@ -63,7 +63,7 @@ class ReleasePackage(unittest.TestCase):
 
     def test_runtime_dependencies_resolve_without_a_toolchain(self):
         dependencies = run("dpkg-deb", "-f", str(PACKAGE), "Depends").stdout
-        for package in ("pinentry-qt", "qt6-qpa-plugins", "qt6-wayland", "fido2-tools", "udev", "kmod", "passwd", "pkexec", "polkitd"):
+        for package in ("pinentry-qt", "qt6-qpa-plugins", "qt6-wayland", "fido2-tools", "udev", "kmod", "passwd", "acl", "pkexec", "polkitd"):
             self.assertIn(package, dependencies)
         self.assertNotRegex(dependencies, r"\b(cargo|rustc|cmake|qt6-base-dev)\b")
         result = run("apt-get", "--simulate", "install", str(PACKAGE))
@@ -92,6 +92,7 @@ class ReleasePackage(unittest.TestCase):
 
     def test_setup_and_maintainer_scripts_in_isolated_chroot(self):
         jail = Path(self.directory.name) / "jail"
+        self.addCleanup(run, "sudo", "-n", "rm", "-rf", "--", str(jail))
         (jail / "bin").mkdir(parents=True)
         for directory in ("usr/bin", "usr/sbin", "run/udev"):
             (jail / directory).mkdir(parents=True)
@@ -104,8 +105,22 @@ class ReleasePackage(unittest.TestCase):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(library, destination)
             shutil.copymode(library, destination)
+        # Real file operations and ACLs inside the private root. The device is
+        # a disposable plain file; never chmod/chown or trigger the host's nodes.
+        for name in ("mkdir", "mktemp", "rm", "cmp", "chmod", "mv", "sed", "setfacl", "getfacl"):
+            source = Path("/usr/bin") / name
+            shutil.copy2(source, jail / "usr/bin" / name)
+            for library in re.findall(r"(/[^\s()]+)", run("ldd", str(source)).stdout):
+                destination = jail / library.lstrip("/")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(library, destination)
         (jail / "dev").mkdir()
         (jail / "dev/null").touch()  # Regular disposable sink, not a host device.
+        (jail / "dev/uhid").touch(mode=0o600)
+        run("sudo", "-n", "chown", "0:0", str(jail / "dev/uhid"))
+        (jail / "usr/share/yubiquity").mkdir(parents=True)
+        shutil.copyfile(self.root / "usr/share/yubiquity/user-access.rules.in",
+                        jail / "usr/share/yubiquity/user-access.rules.in")
 
         def tool(name, body):
             path = jail / "usr/bin" / name
@@ -142,7 +157,15 @@ else echo "snap $*" >> /calls; fi''')
             run("sudo", "-n", "chroot", str(jail), "/bin/sh", "/setup", "tester")
             calls = (jail / "calls").read_text()
             self.assertEqual(calls.count("groupadd --system yubiquity"), 1)
-            self.assertEqual(calls.count("usermod -a -G yubiquity -- tester"), 2)
+            self.assertNotIn("usermod", calls)
+            access_rule = jail / "etc/udev/rules.d/73-yubiquity-user-1000.rules"
+            self.assertEqual(access_rule.stat().st_uid, 0)
+            self.assertEqual(access_rule.stat().st_mode & 0o777, 0o644)
+            self.assertIn('ATTRS{uevent}=="*HID_NAME=YubiQuity Software FIDO2*"', access_rule.read_text())
+            self.assertIn('setfacl -m u:1000:rw -- $devnode', access_rule.read_text())
+            acl = run("getfacl", "-cpn", str(jail / "dev/uhid")).stdout
+            self.assertIn("user:1000:rw-", acl)
+            self.assertIn("other::---", acl)
             self.assertEqual(calls.count("snap connect firefox:u2f-devices"), 1)
             self.assertEqual(calls.count("modprobe uhid"), 2)
             self.assertEqual(calls.count("udevadm trigger --action=change /sys/class/misc/uhid"), 2)
@@ -161,15 +184,24 @@ else echo "snap $*" >> /calls; fi''')
                 self.assertEqual((jail / "calls").read_text(), calls)
             run("sudo", "-n", "chroot", str(jail), "/bin/sh", "-c",
                 "PKEXEC_UID=1000 /bin/sh /setup --desktop-device")
-            self.assertEqual((jail / "calls").read_text().count("usermod -a -G yubiquity -- tester"), 3)
+            self.assertNotIn("usermod", (jail / "calls").read_text())
+            # A local override must not be silently replaced on a repeated repair.
+            saved_rule = access_rule.read_bytes()
+            run("sudo", "-n", "sh", "-c", 'printf "%s\\n" "# local override" >> "$1"', "fixture", str(access_rule))
+            failure = subprocess.run(["sudo", "-n", "chroot", str(jail), "/bin/sh", "/setup", "tester"],
+                                     capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(failure.returncode, 0)
+            self.assertIn("was not overwritten", failure.stderr)
+            self.assertTrue(access_rule.read_text().endswith("# local override\n"))
+            run("sudo", "-n", "tee", str(access_rule), input=saved_rule.decode())
             (jail / "snap-query-fails").touch()
             failure = subprocess.run(["sudo", "-n", "chroot", str(jail), "/bin/sh", "-c",
                                       "PKEXEC_UID=1000 /bin/sh /setup --desktop-firefox"],
                                      capture_output=True, text=True, timeout=10)
             self.assertNotEqual(failure.returncode, 0)
             self.assertIn("Could not query snapd", failure.stderr)
-            # Firefox-only repair must never change account membership.
-            self.assertEqual((jail / "calls").read_text().count("usermod"), 3)
+            # No repair changes account membership, including Firefox-only setup.
+            self.assertNotIn("usermod", (jail / "calls").read_text())
             (jail / "usr/bin/snap").unlink()
             failure = subprocess.run(["sudo", "-n", "chroot", str(jail), "/bin/sh", "-c",
                                       "PKEXEC_UID=1000 /bin/sh /setup --desktop-firefox"],

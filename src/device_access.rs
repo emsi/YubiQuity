@@ -23,7 +23,7 @@ pub(crate) fn open_uhid() -> Result<File> {
     // Opening UHID alone does not create a device; CREATE2 does that later.
     options().open("/dev/uhid").with_context(|| {
         format!(
-            "cannot open /dev/uhid\n{}\nLoad the uhid module and install the scoped host access rule; run as your normal user, not sudo. See docs/host-testing.md.",
+            "cannot open /dev/uhid\n{}\nOpen YubiQuity's Setup tab and choose Enable access, or ask an administrator to run sudo yubiquity-setup YOUR_USERNAME. This grants device access without a logout or reboot. See docs/install.md.",
             describe(Path::new("/dev/uhid")),
         )
     })
@@ -39,6 +39,7 @@ pub(crate) fn process_identity() -> String {
                         || line.starts_with("Gid:")
                         || line.starts_with("Groups:")
                 })
+                .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
                 .collect::<Vec<_>>()
                 .join("; ")
         })
@@ -147,7 +148,7 @@ pub(crate) fn wait_hidraw(node: &Path, sysfs: &Path, unique: &str, helper: bool)
             let advice = if helper {
                 "The explicitly selected node helper did not provide an accessible matching device; check its output and device-cgroup access."
             } else {
-                "Native device access failed. Check the installed 72-yubiquity.rules and this process's groups. No node helper was selected. Do not chmod all hidraw devices or run the daemon as root."
+                "Native device access failed. Open YubiQuity's Setup tab and choose Enable access. If it still fails, inspect the installed device rules and account ACLs in the diagnostic details. See docs/install.md."
             };
             format!("hidraw readiness failed after {} ms\n{}\n{advice}\nThe temporary device will now detach; the vault is unchanged.", start.elapsed().as_millis(), describe(node))
         })?;

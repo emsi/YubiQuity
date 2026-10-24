@@ -10,12 +10,12 @@ YubiKey.
 The installer supports **Ubuntu 24.04, amd64/x86-64**, including KDE X11 and
 Wayland. It includes the desktop application, backend and device setup.
 
-1. Download **[yubiquity_0.2.1-1_amd64.deb](https://github.com/emsi/YubiQuity/releases/download/v0.2.1/yubiquity_0.2.1-1_amd64.deb)**
+1. Download **[yubiquity_0.2.2-1_amd64.deb](https://github.com/emsi/YubiQuity/releases/download/v0.2.2/yubiquity_0.2.2-1_amd64.deb)**
    from [GitHub Releases](https://github.com/emsi/YubiQuity/releases/latest).
 2. Open a terminal in the folder containing the downloaded file and run:
 
    ```bash
-   sudo apt install ./yubiquity_0.2.1-1_amd64.deb
+   sudo apt install ./yubiquity_0.2.2-1_amd64.deb
    ```
 
    **Use APT:** it downloads the required Qt and FIDO packages and completes
@@ -32,26 +32,26 @@ usable.
 
 ## First use
 
-The application opens **Setup and browser checks** on first launch:
+The application opens **Setup** on first launch:
 
-1. Follow the device-access checks. Click **Configure device access** if offered
-   and authenticate in the administrator dialog. If setup reports that your
-   desktop session has old group membership, save your work and reboot once.
-2. If Firefox Snap needs access, click **Enable Firefox Snap**, then fully quit
+1. Follow the device-access checks. Click **Enable access** if offered
+   and authenticate in the administrator dialog. Access takes effect in your
+   current session; no new group membership, logout or reboot is required.
+2. If Firefox Snap needs access, click **Allow Firefox Snap**, then fully quit
    and reopen Firefox. The package supplies the device rules; the setup page
    handles the configuration.
 3. Choose **Create vault** and a vault passphrase, or **Open vault** and unlock
    an existing vault. The passphrase unlocks your encrypted passkey storage.
 4. Choose **Set security-key PIN** if the vault does not already have one. This
    is the PIN your browser requests, separate from the vault passphrase.
-5. Click **Open webauthn.io in my default browser** and use a disposable test
+5. Click **Open test site** and use a disposable test
    username. Register using **Security key**, enter the PIN when asked, and
    click **Approve** in YubiQuity. Then test signing in with the same username.
    Click **Done** in setup when finished; the unlocked app hides to the tray
    when a system tray is available.
 
 See the [installation and setup guide](docs/install.md) for the full walkthrough
-and troubleshooting, including Firefox Snap and group membership.
+and troubleshooting, including Firefox Snap and device permissions.
 
 ## Everyday use
 
@@ -65,7 +65,7 @@ and troubleshooting, including Firefox Snap and group membership.
 
 Closing the main window keeps YubiQuity running when a tray is available.
 Without a tray, the window stays visible after unlock and closing it locks and
-exits. Return to **Setup and browser checks** for diagnostics or PIN changes.
+exits. Return to **Setup** for diagnostics or PIN changes.
 
 ## Documentation
 
@@ -74,6 +74,10 @@ exits. Return to **Setup and browser checks** for diagnostics or PIN changes.
 - [Detailed host testing and source installation](docs/host-testing.md)
 - [Test results and limitations](docs/test-report.md)
 - [Design plan](firefox-virtual-fido2-plan.md) and [implementation status](docs/implementation-status.md)
+
+**Version 0.2.2:** simpler setup and immediate account access through device ACLs.
+If an older version asks you to reboot, upgrade and choose **Setup → Enable
+access** instead. Your vault and PIN remain usable.
 
 **Security update:** version 0.2.1 upgrades P-256 cryptography to remove the
 `crypto-bigint` version flagged by
@@ -161,7 +165,7 @@ tray automatically when ready. Setup remains visible while you work through it. 
 tray** and closing the main window keep the app running when a tray is available;
 **Lock and quit** always exits. Without a tray, the window stays visible after
 unlock, and closing locks and exits. No autostart or password caching is enabled.
-Return to **Setup and browser checks** for diagnostics, PIN changes or repairs.
+Return to **Setup** for diagnostics, PIN changes or repairs.
 Repairs use the root-owned helper installed by the `.deb`, through the desktop
 polkit agent. The application and vault service remain unprivileged. Source
 builds without that installed helper offer the same diagnostics and PIN controls,
@@ -295,7 +299,7 @@ Before testing PIN-required passkeys, configure the authenticator PIN once while
 the vault is unlocked and attached. In another terminal, substitute the exact
 current hidraw path reported for this YubiQuity device (not a physical key):
 
-In the GUI, unlock the vault and use **Setup and browser checks → Set security-key
+In the GUI, unlock the vault and use **Setup → Set security-key
 PIN** (or **Change security-key PIN**). No device path is needed. These CLI commands
 remain available for explicit terminal use:
 

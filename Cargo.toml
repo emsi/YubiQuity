@@ -1,6 +1,6 @@
 [package]
 name = "yubiquity"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.99"
 description = "Software-backed FIDO2 authenticator using Linux UHID"

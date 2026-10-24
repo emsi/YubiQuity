@@ -12,6 +12,49 @@ The user subsequently recreated the container with the supplied seccomp policy.
 Chrome is now runnable and the positive interoperability scenarios below pass.
 Host deployment remains outside authorized execution scope and unverified.
 
+## Immediate account access and simpler setup (2026-10-24)
+
+Version 0.2.2 replaces new group membership with explicit named-user device ACLs.
+The administrator-authenticated, installed helper grants only the resolved
+account UID, writes a root-owned scoped udev rule atomically, and refreshes the
+current devices. It refuses to overwrite a customized per-account rule. The
+existing group rules remain compatible; no session restart is requested or
+inferred from group membership. Account grants remain after package removal,
+as documented in the installation guide.
+
+The same desktop application now has a **Setup** tab with three short steps and
+one actionable device summary. Technical check results stay under **Show
+details**; diagnostic tabs render as spaces. An early UHID service failure sends
+the user to Setup with an access action instead of presenting process IDs as
+the primary instruction. The GUI refuses to use an older group-based setup
+helper while promising immediate access.
+
+Validation:
+
+- All 82 Rust tests and strict Clippy passed.
+- Four udev/ACL checks passed. The real udev rule engine matches add/change for
+  UHID and the intended virtual key, queues the correct per-user ACL command,
+  and excludes unrelated devices and remove events. A root-owned private copy
+  of the null character device was denied to an already-running process with
+  an empty supplementary-group list, then became accessible after the ACL grant.
+  Recreating the node removed access; reapplying the ACL restored it in that same
+  process, with no world permissions or group change.
+- All five installable-package checks passed, including real ACL application
+  to a disposable file inside a private chroot, repeated setup, authenticated
+  caller checks, preservation of custom rules, no usermod call, and Firefox
+  query failures. Module, udev-daemon and Snap commands are simulated there;
+  no host filesystem or running host udev is exposed.
+- Qt/controller and native secret-dialog tests passed. The setup screenshot was
+  inspected. Isolated KWin X11 and Wayland tray/workspace checks passed.
+- Firefox 158.0.1 and sandboxed Chrome 155.0.8059.84 passed required-PIN
+  registration/login and credential reuse in both directions through actual
+  UHID, using disposable local test vaults. Artifacts:
+  `target/browser-results/1792849821403489242/`.
+
+These checks establish the ACL mechanism and scoped rule behavior in the
+container. The complete administrator-prompt/udev/Snap flow on the user's
+physical desktop remains a host acceptance check. No host access was used.
+
 ## First binary release packaging (2026-10-23)
 
 `scripts/package-deb.py` builds both canonical components and packages Ubuntu

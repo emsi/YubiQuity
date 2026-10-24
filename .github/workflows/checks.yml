@@ -18,7 +18,7 @@ jobs:
       - name: Install independent verifiers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3-fido2 python3-cryptography python3-argon2 python3-nacl python3-gi gir1.2-umockdev-1.0 umockdev udev docker-compose-v2
+          sudo apt-get install -y --no-install-recommends python3-fido2 python3-cryptography python3-argon2 python3-nacl python3-gi gir1.2-umockdev-1.0 umockdev udev acl docker-compose-v2
           sudo apt-get install -y --no-install-recommends cmake pkg-config libxcb1-dev qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins qt6-wayland pinentry-qt desktop-file-utils dpkg-dev binutils
           sudo apt-get install -y --no-install-recommends xvfb xdotool python3-pil dbus-daemon kwin-x11 kwin-wayland python3-dbus
           rustup show active-toolchain

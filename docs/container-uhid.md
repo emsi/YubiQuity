@@ -349,30 +349,17 @@ Broader host deployment and other browser packages remain unverified. See the
 Optional deployment reference only. Host access is not authorized for the current
 work; do not execute these steps as part of the container/Firefox validation.
 
-[72-yubiquity.rules](../packaging/udev/72-yubiquity.rules) restricts `/dev/uhid`
-and this project's hidraw nodes to an explicitly selected `yubiquity` group.
-Only add trusted users: opening UHID permits creating other types of HID devices,
-including input devices. The group is not just a passkey-signing permission.
-For a single-user test deployment, only that user should be a member. Browser
-and daemon processes must inherit the updated group membership.
+For a normal desktop installation, follow the [installation guide](install.md)
+and choose **Setup → Enable access**. Since 0.2.2 the root-owned setup helper
+adds a named-user ACL for the authenticated account. It also installs a scoped
+udev rule to restore that grant for recreated devices. Existing browser and app
+processes can use the grant immediately; no group change, logout or reboot is
+required. The older `yubiquity` group rule remains for existing installations.
 
-Review existing group/rule configuration first. Run these on the **host**, not
-inside a container without udev:
+UHID access permits creating other HID devices, including input devices. Grant
+it only to trusted accounts. Other hidraw devices are not covered by the access
+rule. The application and browser still run as ordinary users.
 
-```bash
-yubiquity_user=$(id -un)
-getent group yubiquity || sudo groupadd --system yubiquity
-sudo usermod -aG yubiquity "$yubiquity_user"
-sudo install -m 0644 packaging/udev/72-yubiquity.rules /etc/udev/rules.d/72-yubiquity.rules
-sudo modprobe uhid
-sudo udevadm control --reload-rules
-sudo udevadm trigger --action=change /sys/class/misc/uhid
-```
-
-Log out/in so both browser and daemon receive the group. Then attach a fresh
-device; do not trigger broad permission changes to unrelated hidraw nodes.
-Inspect the printed device path with `stat`/`udevadm info` and verify its group and
-`0660` mode before testing. The normal host unit does not use the sudo node helper.
 These rules do not replace the container's device-cgroup rule or create dynamic
 nodes inside a container whose `/dev` is separate from the host.
 
@@ -380,8 +367,8 @@ The hidraw rule checks the virtual UHID path, HID parent subsystem, project
 bus/VID/PID, and name/unique properties from the parent's `uevent` attribute.
 Those identifiers are scope filters, **not authentication or hardware claims**.
 It removes `uaccess` for matching project nodes after generic 70-uaccess rules
-and before 73-seat-late, leaving access with the selected group instead of every
-active seat user. Other HID nodes are not matched. Review local/distro access
+and before 73-seat-late, preserving the explicit account grants and legacy
+group access instead of granting every active seat user access. Other HID nodes are not matched. Review local/distro access
 rules too: custom later rules or ACLs can change effective access. See the
 [udev rule semantics](https://www.freedesktop.org/software/systemd/man/latest/udev.html).
 
