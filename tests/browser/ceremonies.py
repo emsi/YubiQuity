@@ -371,6 +371,8 @@ class WebDriver:
         chrome_account_clicked_at = 0
         chrome_error_attempts = 0
         chrome_error_clicked_at = 0
+        pin_submit_attempts = 0
+        pin_submitted_at = 0
         while time.monotonic() < end:
             try:
                 result = self.script("return window.result")
@@ -435,6 +437,20 @@ class WebDriver:
                         self.record({"event": "native-pin-prompt", "attempt": len(self.last_pin_prompts),
                                      "message": message, "recognition": "isolated-display-ocr"})
                         pin_sent_at = time.monotonic()
+                        pin_submit_attempts = 0
+            if (self.family == "chrome" and pin_sent_at is not None
+                    and time.monotonic() - pin_sent_at > 1.5
+                    and time.monotonic() - pin_submitted_at > 1 and pin_submit_attempts < 3):
+                # Reuse the public-site harness's guarded retry: Chrome can
+                # accept the typed PIN before its newly opened sheet accepts
+                # Enter. Recognize the PIN sheet again; never retype the secret
+                # or submit an incorrect-PIN/error/account-selection sheet.
+                message = self.display.chrome_submit_typed_pin(self.version)
+                pin_submitted_at = time.monotonic()
+                if message is not None:
+                    pin_submit_attempts += 1
+                    self.record({"event": "native-pin-submit", "attempt": pin_submit_attempts,
+                                 "message": message, "recognition": "isolated-display-ocr"})
             if (self.family == "chrome" and kind == "authenticate" and not pins
                     and pin_sent_at is not None and time.monotonic() - pin_sent_at > 1.5
                     and chrome_account_attempts < 3 and time.monotonic() - chrome_account_clicked_at > 1

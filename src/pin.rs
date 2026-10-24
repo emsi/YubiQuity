@@ -11,7 +11,7 @@ use aes::Aes256;
 use cbc::cipher::{block_padding::NoPadding, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use ciborium::Value;
 use hmac::{Hmac, Mac};
-use p256::{ecdh::diffie_hellman, elliptic_curve::sec1::ToEncodedPoint, PublicKey, SecretKey};
+use p256::{ecdh::diffie_hellman, elliptic_curve::sec1::ToSec1Point, PublicKey, SecretKey};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
@@ -90,7 +90,7 @@ impl PinRuntime {
             .as_ref()
             .ok_or(Status::Other)?
             .public_key()
-            .to_encoded_point(false);
+            .to_sec1_point(false);
         Ok(map([
             (int(1), int(2)),
             (int(3), int(-25)),

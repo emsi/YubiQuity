@@ -4,18 +4,21 @@ The binary package targets **Ubuntu 24.04, amd64/x86-64**, including KDE X11
 and Wayland. It contains the matching GUI and backend; apt installs the runtime
 dependencies. No Rust toolchain or browser download is needed to install it.
 
-**Version 0.2.0** includes guided onboarding in the existing desktop application.
-If you installed 0.1.0, choose **Lock and quit**, install the new package, then
-reopen YubiQuity. Your existing vault and PIN remain usable.
+**Version 0.2.1** fixes the cryptographic dependency flagged by
+[RUSTSEC-2026-0387](https://github.com/RustSec/advisory-db/blob/main/crates/crypto-bigint/RUSTSEC-2026-0387.md)
+and includes guided onboarding in the existing desktop application. If you
+installed 0.1.0 or 0.2.0, choose **Lock and quit**, install the new package, then
+reopen YubiQuity. Your existing vault and PIN remain usable; no migration or
+re-registration is required.
 
 ## First installation
 
-1. Download `yubiquity_0.2.0-1_amd64.deb` from
-   [the v0.2.0 release](https://github.com/emsi/YubiQuity/releases/tag/v0.2.0).
+1. Download `yubiquity_0.2.1-1_amd64.deb` from
+   [the v0.2.1 release](https://github.com/emsi/YubiQuity/releases/tag/v0.2.1).
    In the download directory, install it with:
 
    ```bash
-   sudo apt install ./yubiquity_0.2.0-1_amd64.deb
+   sudo apt install ./yubiquity_0.2.1-1_amd64.deb
    ```
 
 2. Open **YubiQuity** from the application menu, as your normal user.
@@ -116,8 +119,8 @@ On Ubuntu 24.04 amd64, install the development dependencies in the
 
 ```bash
 ./scripts/package-deb.py
-/usr/bin/python3 tests/release_package.py target/release-assets/v0.2.0/yubiquity_0.2.0-1_amd64.deb
-sudo apt install ./target/release-assets/v0.2.0/yubiquity_0.2.0-1_amd64.deb
+/usr/bin/python3 tests/release_package.py target/release-assets/v0.2.1/yubiquity_0.2.1-1_amd64.deb
+sudo apt install ./target/release-assets/v0.2.1/yubiquity_0.2.1-1_amd64.deb
 ```
 
 The builder compiles both components and creates the `.deb`, checksums and build

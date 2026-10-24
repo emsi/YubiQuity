@@ -41,7 +41,7 @@ impl CredentialSigner for SoftwareSigner {
     }
     fn public_key(&self, key: &[u8; 32]) -> CtapResult<Value> {
         let signing = SigningKey::from_slice(key).map_err(|_| Status::Other)?;
-        let point = signing.verifying_key().to_encoded_point(false);
+        let point = signing.verifying_key().to_sec1_point(false);
         Ok(map([
             (int(1), int(2)),  // EC2
             (int(3), int(-7)), // ES256

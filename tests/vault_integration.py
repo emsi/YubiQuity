@@ -21,14 +21,14 @@ from transport_integration import BINARY, daemon, deadline, open_device, wait_re
 PASSWORD = b"disposable vault test passphrase"
 
 
-def cli(command, vault, *arguments, passphrase=PASSWORD, check=True):
+def cli(command, vault, *arguments, passphrase=PASSWORD, check=True, binary=None):
     read_fd, write_fd = os.pipe()
     try:
         os.write(write_fd, passphrase)
     finally:
         os.close(write_fd)
     try:
-        result = subprocess.run([str(BINARY), command, "--vault", str(vault), "--passphrase-fd", str(read_fd), *arguments],
+        result = subprocess.run([str(BINARY if binary is None else binary), command, "--vault", str(vault), "--passphrase-fd", str(read_fd), *arguments],
                                 pass_fds=(read_fd,), capture_output=True, text=True, timeout=30)
     finally:
         os.close(read_fd)

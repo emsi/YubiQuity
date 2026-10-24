@@ -16,6 +16,11 @@ For a hands-on test with your own browser, follow the
 permissions, a private test vault, PIN setup, both public demo sites, persistence,
 and Firefox/Chrome credential reuse without browser modifications.
 
+**Security update:** version 0.2.1 upgrades P-256 cryptography to remove the
+`crypto-bigint` version flagged by
+[RUSTSEC-2026-0387](https://github.com/RustSec/advisory-db/blob/main/crates/crypto-bigint/RUSTSEC-2026-0387.md).
+Existing vaults, passkeys and PINs remain compatible.
+
 **First run (0.2.0):** the existing GUI opens **Setup and browser checks**.
 It checks device access and Firefox Snap, offers administrator-authenticated
 repairs, lets you set the security-key PIN, and guides a browser test. The
@@ -186,8 +191,9 @@ The [CI workflow](.github/workflows/checks.yml) runs formatting, lint, unit test
 the independent RP/vault verifiers, both dependency audits, and bounded ASan
 fuzz campaigns. It does **not** silently treat missing UHID/browser permissions
 as a passed interoperability test. Real-device/browser commands below remain
-separate release gates. The workflow is checked in; a hosted CI run is not yet
-recorded for this repository.
+separate release gates. Publish releases only after the full hosted workflow
+(including both security audits and fuzzing) succeeds for the exact release
+commit. A successful build or package test alone is not sufficient.
 
 ```bash
 cargo install cargo-audit --version 0.22.2 --locked

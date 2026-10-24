@@ -86,15 +86,15 @@ def device_test_lock():
 
 
 @contextlib.contextmanager
-def daemon(command="probe", test_presence=None, *, vault=None, passphrase=None, fail_writes=False):
+def daemon(command="probe", test_presence=None, *, vault=None, passphrase=None, fail_writes=False, binary=None):
     with device_test_lock():
-        with _daemon(command, test_presence, vault=vault, passphrase=passphrase, fail_writes=fail_writes) as running:
+        with _daemon(command, test_presence, vault=vault, passphrase=passphrase, fail_writes=fail_writes, binary=binary) as running:
             yield running
 
 
 @contextlib.contextmanager
-def _daemon(command="probe", test_presence=None, *, vault=None, passphrase=None, fail_writes=False):
-    args = [str(BINARY), command, *node_arguments()]
+def _daemon(command="probe", test_presence=None, *, vault=None, passphrase=None, fail_writes=False, binary=None):
+    args = [str(BINARY if binary is None else binary), command, *node_arguments()]
     if command == "init":
         args.append("--run")
     if test_presence is not None:

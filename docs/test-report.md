@@ -740,3 +740,51 @@ actual Firefox Snap repair still need a user test on the host; isolated package
 checks do not establish those desktop/system integrations. Browser verification
 in the onboarding UI is an explicit user-driven registration and login at
 webauthn.io, not an automated compatibility claim or a new public-site test run.
+
+## Cryptographic dependency security update — 2026-10-24
+
+Version 0.2.1 upgrades `p256` 0.13.2 → 0.14.0 and its elliptic-curve/ECDSA
+stack. Both production and fuzz lockfiles now resolve `crypto-bigint` 0.7.6,
+which addresses
+[RUSTSEC-2026-0387](https://github.com/RustSec/advisory-db/blob/main/crates/crypto-bigint/RUSTSEC-2026-0387.md).
+The source changes adapt the renamed SEC1 point-encoding API. No advisory ignore,
+retry limit, vault-format change or browser modification was introduced.
+
+Local validation before publishing:
+
+- Both `cargo audit` 0.22.2 runs pass against the current RustSec database;
+  production and fuzz dependency trees contain the patched version.
+- All 82 Rust tests and both formatting/clippy checks pass.
+- All 27 independent credential, ClientPIN, persistent-vault, control and
+  Argon2/libsodium checks pass with the rebuilt release backend over real UHID
+  where applicable. Native GUI/PIN-entry and desktop controller tests pass.
+- `tests/release_upgrade.py` passes against the binary extracted from the actual
+  v0.2.0 `.deb`: create a vault/passkey/PIN in the previous release, authenticate
+  in the new release, change the PIN and add a credential, then reopen and use
+  both credentials in both versions. Signatures are checked independently by
+  Python FIDO/cryptography. Authentication alone leaves the vault bytes unchanged.
+
+Stock Firefox 158.0.1 and sandboxed Chrome for Testing 155.0.8059.84 pass required-PIN
+resident registration/login, credential reuse in both browser directions, and
+persistent service lock/reopen with fresh browser profiles. Artifacts are in
+`target/browser-results/1792843172086827804/`,
+`target/browser-results/service-1792843184481955813/`, and
+`target/browser-results/service-1792843191723693466/`. These are local RP tests in
+isolated container displays, not additional host or public-service test runs.
+
+The upgrade test uses only disposable vaults and can be repeated with:
+
+```bash
+YUBIQUITY_TEST_BINARY="$PWD/target/host/release/yubiquity" \
+    /usr/bin/python3 tests/release_upgrade.py /path/to/previous/yubiquity
+```
+
+The local browser harness now uses its existing guarded PIN-submit retry in the
+local ceremonies as well as public-site tests. A Chrome test timed out with the
+PIN typed but still awaiting submission; the retry recognizes that exact native
+sheet again and sends Enter without retyping, with at most three submissions per
+PIN. It refuses incorrect-PIN, error and account-selection screens.
+
+Full hosted CI, including both dependency audits and ASan fuzzing, must succeed
+for the release commit before publishing. Passing the audit addresses this known
+dependency finding; it is not an independent constant-time audit of YubiQuity.

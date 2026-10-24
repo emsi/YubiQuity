@@ -2,7 +2,7 @@ use aes::Aes256;
 use cbc::cipher::{block_padding::NoPadding, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use ciborium::Value;
 use hmac::{Hmac, Mac};
-use p256::{ecdh::diffie_hellman, elliptic_curve::sec1::ToEncodedPoint, PublicKey, SecretKey};
+use p256::{ecdh::diffie_hellman, elliptic_curve::sec1::ToSec1Point, PublicKey, SecretKey};
 use sha2::{Digest, Sha256};
 use std::os::unix::fs::PermissionsExt;
 use yubiquity::authenticator::{Authenticator, CtapResult, Prompt, RequestContext, Status};
@@ -74,7 +74,7 @@ impl Client {
         let device_key = PublicKey::from_sec1_bytes(&point).unwrap();
         let private = SecretKey::from_slice(&[0x11; 32]).unwrap(); // test-only key
         let shared = diffie_hellman(private.to_nonzero_scalar(), device_key.as_affine());
-        let public = private.public_key().to_encoded_point(false);
+        let public = private.public_key().to_sec1_point(false);
         Self {
             shared: Sha256::digest(shared.raw_secret_bytes()).into(),
             peer: map([
