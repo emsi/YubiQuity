@@ -3,38 +3,82 @@
 A software-backed FIDO2 authenticator for Linux, intended to work through the
 normal external security-key path in unmodified Firefox and Chromium browsers.
 It is a testing tool, not hardware-backed key protection or a manufacturer-attested
-YubiKey. See the [full plan](firefox-virtual-fido2-plan.md) and
-[implementation ledger](docs/implementation-status.md).
+YubiKey.
 
-**Install on Ubuntu 24.04 amd64:** download the `.deb` from
-[GitHub Releases](https://github.com/emsi/YubiQuity/releases/latest), then follow
-the [short installation guide](docs/install.md). It includes the GUI, backend and
-device setup; no development toolchain or separate browser download is needed.
+## Install
 
-For a hands-on test with your own browser, follow the
-[end-to-end Linux host walkthrough](docs/host-testing.md). It covers host device
-permissions, a private test vault, PIN setup, both public demo sites, persistence,
-and Firefox/Chrome credential reuse without browser modifications.
+The installer supports **Ubuntu 24.04, amd64/x86-64**, including KDE X11 and
+Wayland. It includes the desktop application, backend and device setup.
+
+1. Download **[yubiquity_0.2.1-1_amd64.deb](https://github.com/emsi/YubiQuity/releases/download/v0.2.1/yubiquity_0.2.1-1_amd64.deb)**
+   from [GitHub Releases](https://github.com/emsi/YubiQuity/releases/latest).
+2. Open a terminal in the folder containing the downloaded file and run:
+
+   ```bash
+   sudo apt install ./yubiquity_0.2.1-1_amd64.deb
+   ```
+
+   **Use APT:** it downloads the required Qt and FIDO packages and completes
+   setup. `dpkg -i` cannot download missing dependencies. If you already tried
+   `dpkg -i` and it left YubiQuity unconfigured, run the APT command above from
+   the same folder to finish installation.
+
+3. Open **YubiQuity** from your application menu as your normal user.
+
+No development toolchain or separate browser download is needed. To upgrade an
+existing installation, first choose **Lock and quit**, then install the new
+package with APT and reopen YubiQuity. Existing vaults, passkeys and PINs remain
+usable.
+
+## First use
+
+The application opens **Setup and browser checks** on first launch:
+
+1. Follow the device-access checks. Click **Configure device access** if offered
+   and authenticate in the administrator dialog. If setup reports that your
+   desktop session has old group membership, save your work and reboot once.
+2. If Firefox Snap needs access, click **Enable Firefox Snap**, then fully quit
+   and reopen Firefox. The package supplies the device rules; the setup page
+   handles the configuration.
+3. Choose **Create vault** and a vault passphrase, or **Open vault** and unlock
+   an existing vault. The passphrase unlocks your encrypted passkey storage.
+4. Choose **Set security-key PIN** if the vault does not already have one. This
+   is the PIN your browser requests, separate from the vault passphrase.
+5. Click **Open webauthn.io in my default browser** and use a disposable test
+   username. Register using **Security key**, enter the PIN when asked, and
+   click **Approve** in YubiQuity. Then test signing in with the same username.
+   Click **Done** in setup when finished; the unlocked app hides to the tray
+   when a system tray is available.
+
+See the [installation and setup guide](docs/install.md) for the full walkthrough
+and troubleshooting, including Firefox Snap and group membership.
+
+## Everyday use
+
+1. Open **YubiQuity** and **Unlock** your vault. Leave the app running in the tray.
+   It does not start automatically when you log in.
+2. In your browser, choose **Security key** when registering or signing in with
+   a passkey. Enter the security-key PIN if requested, then check the action,
+   site and account in YubiQuity's popup and click **Approve** or **Cancel**.
+3. Click the tray icon to open the main window or recall a pending approval.
+   **Lock** makes the key unavailable; **Lock and quit** also exits the app.
+
+Closing the main window keeps YubiQuity running when a tray is available.
+Without a tray, the window stays visible after unlock and closing it locks and
+exits. Return to **Setup and browser checks** for diagnostics or PIN changes.
+
+## Documentation
+
+- [Installation, setup, upgrades and troubleshooting](docs/install.md)
+- [Vault capacity, copying between computers and secret storage](docs/vault.md)
+- [Detailed host testing and source installation](docs/host-testing.md)
+- [Test results and limitations](docs/test-report.md)
+- [Design plan](firefox-virtual-fido2-plan.md) and [implementation status](docs/implementation-status.md)
 
 **Security update:** version 0.2.1 upgrades P-256 cryptography to remove the
 `crypto-bigint` version flagged by
 [RUSTSEC-2026-0387](https://github.com/RustSec/advisory-db/blob/main/crates/crypto-bigint/RUSTSEC-2026-0387.md).
 Existing vaults, passkeys and PINs remain compatible.
-
-**First run (0.2.0):** the existing GUI opens **Setup and browser checks**.
-It checks device access and Firefox Snap, offers administrator-authenticated
-repairs, lets you set the security-key PIN, and guides a browser test. The
-package already includes both udev rules; packaged users should not copy them
-into `/etc` again. See [installation and onboarding](docs/install.md).
-The [Snap troubleshooting guide](docs/host-testing.md#ubuntu-firefox-installed-as-a-snap)
-remains available for source installations or customized systems.
-
-Already have a vault? Use `yubiquity run --vault PATH`; it checks basic
-prerequisites before asking for your passphrase and waits for native hidraw
-permissions. `yubiquity doctor --vault PATH` diagnoses without secrets or setting
-changes; `doctor --probe` explicitly adds a temporary device-access check.
-For a new vault, `yubiquity init --run --vault PATH` creates and attaches in one
-flow, with no extra unlock prompt after choosing and confirming the passphrase.
 
 ## Current status
 
@@ -219,6 +263,13 @@ Use `--target cbor|hid|ctap|control` to select one, or a longer `--seconds` for 
 Short clean runs and an advisory-free lockfile are checks, not proof of security.
 
 ## Run with an encrypted vault
+
+For terminal use, `yubiquity run --vault PATH` checks basic prerequisites before
+asking for your passphrase and waits for native hidraw permissions.
+`yubiquity doctor --vault PATH` diagnoses without secrets or setting changes;
+`doctor --probe` explicitly adds a temporary device-access check.
+For a new vault, `yubiquity init --run --vault PATH` creates and attaches in one
+flow, with no extra unlock prompt after choosing and confirming the passphrase.
 
 Use a dedicated private directory. `init` can create its immediate parent with
 mode `0700`; it never overwrites an existing vault. All higher parents must already

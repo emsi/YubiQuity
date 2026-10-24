@@ -21,6 +21,12 @@ re-registration is required.
    sudo apt install ./yubiquity_0.2.1-1_amd64.deb
    ```
 
+   **Use APT to install the downloaded file.** It downloads required packages,
+   including Qt platform plugins, Wayland support and FIDO tools. `dpkg -i`
+   only installs the local file and cannot fetch missing dependencies. If you
+   already used `dpkg -i` and it reported dependency errors, run the same APT
+   command above to install the missing packages and finish configuration.
+
 2. Open **YubiQuity** from the application menu, as your normal user.
    **Setup and browser checks** opens on first run. Its device check briefly
    attaches a temporary key without opening a vault. Do not start a browser
@@ -72,10 +78,29 @@ polkit action for its root-owned setup helper. The GUI, vault, PIN input and
 browser requests run as your normal user. Installation does not enable a daemon
 or autostart entry. The helper accepts no vault paths or secrets.
 
+## Everyday use
+
+Open **YubiQuity** from your application menu and **Unlock** your selected vault
+with its passphrase. After onboarding is complete, the unlocked app hides to
+the tray when one is available. Keep it running while you use passkeys; it does
+not start automatically at login.
+
+In your browser, select **Security key** when creating or using a passkey. If
+asked, enter the security-key PIN. YubiQuity then asks you to approve the action,
+site and available account. Click **Approve** to continue or **Cancel** to reject
+the request. The vault passphrase is only for unlocking YubiQuity; the browser
+uses the separate security-key PIN.
+
+Click the tray icon to open the main window or recall a pending approval.
+**Lock** detaches the key until you unlock again. **Lock and quit** also exits
+the application. Closing the main window keeps it running when a tray is
+available; without a tray, closing locks and exits.
+
 ## If setup needs attention
 
 | Message or symptom | Next step |
 | --- | --- |
+| `dpkg` reports missing dependencies and leaves YubiQuity unconfigured | In the download directory, run `sudo apt install ./yubiquity_0.2.1-1_amd64.deb`. APT downloads the dependencies and finishes configuration. |
 | Desktop session has old groups | Save your work and reboot once. Do not repeat group setup. |
 | Automatic repair requires the installed package | Install the current `.deb`. Source builds intentionally do not elevate scripts from the checkout. |
 | Administrator prompt does not appear | Your desktop needs a running polkit authentication agent. An administrator can alternatively run `sudo yubiquity-setup YOUR_USERNAME`. |

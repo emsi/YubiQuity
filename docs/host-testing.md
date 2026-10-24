@@ -1,8 +1,8 @@
 # End-to-end testing on your Linux host
 
 **Installed the `.deb`?** Start with [the short installation guide](install.md).
-Version 0.2.0 provides guided setup in the existing GUI, including native
-administrator prompts, Firefox Snap diagnostics and PIN setup. The manual
+The packaged application provides guided setup in the existing GUI, including
+native administrator prompts, Firefox Snap diagnostics and PIN setup. The manual
 rule/group instructions below are for source installations and troubleshooting;
 the package already installs both udev rules.
 
