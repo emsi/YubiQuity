@@ -107,7 +107,16 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
                 reason == QSystemTrayIcon::DoubleClick)
               Show();
           });
-  connect(tray, &QSystemTrayIcon::messageClicked, this, &Window::Show);
+  notification = new ApprovalNotification(this);
+  connect(notification, &ApprovalNotification::activated, this,
+          [this](const QString &request) {
+            if (sessionLocked || stopping || busy || model.state != "ready" ||
+                !approval || model.pending.token != request ||
+                approval->token() != request || !approval->isLive())
+              return;
+            // Recall only this approval; never fall back to the main window.
+            presentWindow(*approval);
+          });
   // Qt registers the visible icon if a tray host appears later. Do not hide a
   // window unless a host is actually available, however.
   tray->show();
@@ -386,6 +395,7 @@ void Window::readSnapshots() {
 }
 
 void Window::dismissApproval() {
+  notification->clear();
   if (!approval)
     return;
   approval->disconnect(this);
@@ -468,10 +478,7 @@ void Window::applySnapshot() {
             });
       });
   presentWindow(*approval);
-  if (QSystemTrayIcon::isSystemTrayAvailable())
-    tray->showMessage(tr("YubiQuity"),
-                      tr("A passkey request needs your confirmation."),
-                      QSystemTrayIcon::Information, 5000);
+  notification->show(approval->token());
 }
 
 void Window::runCommand(const QStringList &arguments, QByteArray secret,

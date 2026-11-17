@@ -103,6 +103,11 @@ def main():
                        YUBIQUITY_TEST_BACKEND=str(BACKEND))
             env.pop("WAYLAND_DISPLAY", None)
             env.pop("DBUS_SESSION_BUS_ADDRESS", None)
+            subprocess.run(["dbus-run-session", "--", str(DESKTOP / "desktop-tests"),
+                            "notificationRecallOnlyCurrentLiveApproval", "notificationEndsWithApproval"],
+                           env=dict(env, YUBIQUITY_PRIVATE_TEST_BUS="1",
+                                    DBUS_SYSTEM_BUS_ADDRESS="unix:path=/nonexistent/yubiquity-test-bus"),
+                           check=True, timeout=30)
             subprocess.run([str(DESKTOP / "desktop-tests"), "nativeApprovalPreview"],
                            env=env, check=True, timeout=10)
             subprocess.run([str(DESKTOP / "desktop-tests"), "nativeSetupPreview"],

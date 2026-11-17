@@ -31,6 +31,7 @@ public:
   explicit ApprovalDialog(const Pending &request);
   void shortenLifetime(qint64 remaining);
   QString token() const { return request.token; }
+  bool isLive() const { return !decided && elapsed.elapsed() < deadline; }
 signals:
   void decision(QString token, bool approve);
   void expired();

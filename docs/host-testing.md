@@ -107,10 +107,21 @@ Repeat the workspace checks in both Plasma **X11** and **Wayland** sessions if
 available at login. `echo "$XDG_SESSION_TYPE"` identifies the session. Leave Qt's
 platform selection at its default; `qt6-wayland` supplies native Wayland support.
 Window placement and focus ultimately follow your compositor's policy. If an
-approval is not raised, click the tray icon or its generic notification. No
+approval is not raised, click the tray icon or that request's notification, if
+your desktop supports notification actions. Notification clicks recall only the
+matching, still-live approval; expired notifications do nothing. Closing a
+notification does not cancel the approval. Click the tray icon to open the main
+window when no approval is pending. No
 special KWin rules, all-desktop window settings, or browser modifications are
 required by the app. The automated tests cover isolated KWin 5.27 sessions;
 your panel, focus settings and installed KDE version are the host acceptance test.
+
+For the notification regression, leave the main window hidden and activate a
+notification from another application, both while YubiQuity is ready and after
+locking it. YubiQuity must remain hidden. During a browser approval, verify that
+its own notification recalls that approval without restarting its countdown.
+After cancellation/expiry/locking, any old notification must do nothing, even
+if a different approval is now pending. Repeat on X11 and Wayland where available.
 
 ## Terminal-only alternative
 

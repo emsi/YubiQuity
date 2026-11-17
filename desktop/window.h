@@ -1,4 +1,5 @@
 #pragma once
+#include "notifications.h"
 #include "process.h"
 #include "setup.h"
 #include "ui.h"
@@ -44,6 +45,7 @@ private:
   QLabel *status, *detail, *vaultLabel, *sessionNote;
   QPushButton *unlock, *lock, *choose, *create, *hideToTray;
   QSystemTrayIcon *tray;
+  ApprovalNotification *notification;
   QTabWidget *tabs;
   SetupPage *setup;
   void startService(bool askUnlock = false);

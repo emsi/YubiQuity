@@ -1,4 +1,6 @@
+#include "notification_fixture.h"
 #include "presentation.h"
+#include <QDBusPendingCallWatcher>
 #include "process.h"
 #include "ui.h"
 #include "window.h"
@@ -117,6 +119,260 @@ public:
 class DesktopTests : public QObject {
   Q_OBJECT
 private slots:
+  void init() {
+    if (QByteArray(QTest::currentTestFunction()).startsWith("notification") &&
+        !qEnvironmentVariableIsSet("YUBIQUITY_PRIVATE_TEST_BUS"))
+      QSKIP("Run through CTest or dbus-run-session with "
+            "YUBIQUITY_PRIVATE_TEST_BUS=1");
+  }
+  void notificationOwnershipReplacementAndPrivacy() {
+    NotificationServer server;
+    ApprovalNotification notification;
+    QSignalSpy actions(&notification, &ApprovalNotification::activated);
+    notification.show("PRIVATE-A");
+    QTRY_COMPARE(server.requests.size(), 1);
+    QTRY_VERIFY(notification.findChildren<QDBusPendingCallWatcher *>().isEmpty());
+    const auto first = server.lastId;
+    QCOMPARE(server.requests[0][1].toUInt(), uint(0));
+    for (const auto &argument : server.requests[0])
+      QVERIFY(!argument.toString().contains("PRIVATE-"));
+    server.action(first + 100);
+    server.action(first, "unexpected");
+    server.dismiss(first + 100);
+    QTest::qWait(50);
+    QCOMPARE(actions.size(), 0);
+    server.action(first);
+    QTRY_COMPARE(actions.size(), 1);
+    QCOMPARE(actions[0][0].toString(), QString("PRIVATE-A"));
+    notification.show("PRIVATE-B");
+    QTRY_COMPARE(server.requests.size(), 2);
+    QTRY_VERIFY(notification.findChildren<QDBusPendingCallWatcher *>().isEmpty());
+    const auto second = server.lastId;
+    QVERIFY(second != first);
+    QCOMPARE(server.requests[1][1].toUInt(), uint(0));
+    QTRY_VERIFY(server.closed.contains(first));
+    server.action(first);
+    QTest::qWait(50);
+    QCOMPARE(actions.size(), 1);
+    server.action(second);
+    QTRY_COMPARE(actions.size(), 2);
+    QCOMPARE(actions[1][0].toString(), QString("PRIVATE-B"));
+    server.dismiss(second);
+    QTest::qWait(50);
+    server.action(second);
+    QTest::qWait(50);
+    QCOMPARE(actions.size(), 2);
+  }
+  void notificationLateRepliesCannotReviveRequests() {
+    NotificationServer server;
+    server.hold = true;
+    ApprovalNotification notification;
+    QSignalSpy actions(&notification, &ApprovalNotification::activated);
+    notification.show("A");
+    QTRY_COMPARE(server.delayed.size(), 1);
+    const auto first = server.lastId;
+    notification.clear();
+    notification.show("B");
+    QTRY_COMPARE(server.delayed.size(), 2);
+    server.reply();
+    QTRY_VERIFY(server.closed.contains(first));
+    server.action(first);
+    QTest::qWait(50);
+    QCOMPARE(actions.size(), 0);
+    notification.clear();
+    server.reply();
+    QTRY_VERIFY(server.closed.contains(server.lastId));
+    server.action(server.lastId);
+    QTest::qWait(50);
+    QCOMPARE(actions.size(), 0);
+  }
+  void notificationServerRestartAndReusedId() {
+    NotificationServer oldServer;
+    ApprovalNotification notification;
+    QSignalSpy actions(&notification, &ApprovalNotification::activated);
+    notification.show("A");
+    QTRY_COMPARE(oldServer.requests.size(), 1);
+    QTest::qWait(50);
+    QVERIFY(oldServer.bus.unregisterService("org.freedesktop.Notifications"));
+    NotificationServer newServer;
+    QTest::qWait(50);
+    // Both servers issue ID 1, but their unique bus owners differ.
+    newServer.action(1);
+    QTest::qWait(50);
+    QCOMPARE(actions.size(), 0);
+    notification.show("B");
+    QTRY_COMPARE(newServer.requests.size(), 1);
+    QTest::qWait(50);
+    QCOMPARE(oldServer.lastId, newServer.lastId);
+    oldServer.action(1);
+    QTest::qWait(50);
+    QCOMPARE(actions.size(), 0);
+    newServer.action(1);
+    QTRY_COMPARE(actions.size(), 1);
+    QCOMPARE(actions[0][0].toString(), QString("B"));
+    QVERIFY(newServer.closed.isEmpty());
+  }
+  void notificationLateReplyFromReplacedServer() {
+    NotificationServer oldServer;
+    oldServer.hold = true;
+    ApprovalNotification notification;
+    QSignalSpy actions(&notification, &ApprovalNotification::activated);
+    notification.show("A");
+    QTRY_COMPARE(oldServer.delayed.size(), 1);
+    QVERIFY(oldServer.bus.unregisterService("org.freedesktop.Notifications"));
+    NotificationServer newServer;
+    QTest::qWait(50);
+    notification.show("B");
+    QTRY_COMPARE(newServer.requests.size(), 1);
+    oldServer.reply();
+    QTRY_VERIFY(oldServer.closed.contains(1));
+    QVERIFY(newServer.closed.isEmpty());
+    newServer.action(1);
+    QTRY_COMPARE(actions.size(), 1);
+    QCOMPARE(actions[0][0].toString(), QString("B"));
+  }
+  void notificationRecallOnlyCurrentLiveApproval() {
+    NotificationServer notifications;
+    FakeService server;
+    server.request = {};
+    Window window(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"), {},
+                  server.path(), {});
+    QTRY_COMPARE(window.findChild<QLabel *>("status")->text(),
+                 QString("Ready"));
+    window.hide();
+    auto *tray = window.findChild<QSystemTrayIcon *>();
+    QVERIFY(QMetaObject::invokeMethod(tray, "messageClicked"));
+    notifications.action(123);
+    QTest::qWait(50);
+    QVERIFY(!window.isVisible());
+    server.request = pending("A");
+    server.publish();
+    QTRY_VERIFY(visibleApproval());
+    QPointer<ApprovalDialog> first = visibleApproval();
+    QTRY_COMPARE(notifications.requests.size(), 1);
+    const auto firstId = notifications.lastId;
+    first->hide();
+    notifications.action(firstId + 100);
+    QVERIFY(QMetaObject::invokeMethod(tray, "messageClicked"));
+    QTest::qWait(50);
+    QVERIFY(!first->isVisible());
+    notifications.action(firstId);
+    QTRY_VERIFY(first->isVisible());
+    QVERIFY(!window.isVisible());
+    server.request = pending("B");
+    server.publish();
+    QTRY_VERIFY(!first);
+    QTRY_VERIFY(visibleApproval());
+    QPointer<ApprovalDialog> second = visibleApproval();
+    QTRY_COMPARE(notifications.requests.size(), 2);
+    second->hide();
+    notifications.action(firstId);
+    QTest::qWait(50);
+    QVERIFY(!second->isVisible());
+    notifications.action(notifications.lastId);
+    QTRY_VERIFY(second->isVisible());
+    // Recall must reject an elapsed deadline even with its timer event queued.
+    second->shortenLifetime(10);
+    second->hide();
+    QTest::qSleep(20);
+    QVERIFY(!second->isLive());
+    auto *notification = window.findChild<ApprovalNotification *>();
+    notification->activated("B");
+    QVERIFY(!second->isVisible());
+    QVERIFY(!window.isVisible());
+    QTRY_VERIFY(!second);
+    QTRY_VERIFY(notifications.closed.contains(notifications.lastId));
+    server.request = pending("C");
+    server.publish();
+    QTRY_VERIFY(visibleApproval());
+    QTRY_COMPARE(notifications.requests.size(), 3);
+    window.screenLocked(true);
+    window.screenLocked(false);
+    QTRY_VERIFY(notifications.closed.contains(notifications.lastId));
+    notifications.action(notifications.lastId);
+    QVERIFY(QMetaObject::invokeMethod(tray, "messageClicked"));
+    QTest::qWait(50);
+    QVERIFY(!visibleApproval());
+    QVERIFY(!window.isVisible());
+    QCOMPARE(window.findChild<QLabel *>("status")->text(), QString("Locked"));
+    QVERIFY(server.commands.isEmpty());
+    window.Show();
+    QVERIFY(window.isVisible()); // Explicit application opening still works.
+  }
+  void notificationFailureDoesNotAffectApproval_data() {
+    QTest::addColumn<int>("mode");
+    QTest::newRow("absent") << 0;
+    QTest::newRow("error") << 1;
+    QTest::newRow("timeout") << 2;
+  }
+  void notificationEndsWithApproval_data() {
+    QTest::addColumn<QString>("ending");
+    for (const auto *name : {"cancelled", "approved", "denied", "disconnected",
+                             "suspend", "manual-lock"})
+      QTest::newRow(name) << QString(name);
+  }
+  void notificationEndsWithApproval() {
+    QFETCH(QString, ending);
+    NotificationServer notifications;
+    FakeService server;
+    Window window(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"), {},
+                  server.path(), {});
+    QTRY_VERIFY(visibleApproval());
+    QPointer<ApprovalDialog> dialog = visibleApproval();
+    QTRY_COMPARE(notifications.requests.size(), 1);
+    if (ending == "cancelled") {
+      server.request = {};
+      server.publish();
+    } else if (ending == "approved") {
+      dialog->findChild<QPushButton *>("approve")->click();
+    } else if (ending == "denied") {
+      dialog->close();
+    } else if (ending == "disconnected") {
+      server.watcher->disconnectFromServer();
+    } else if (ending == "suspend") {
+      window.sleepChanged(true);
+    } else {
+      window.findChild<QPushButton *>("lock")->click();
+    }
+    QTRY_VERIFY(!dialog);
+    QTRY_VERIFY(notifications.closed.contains(notifications.lastId));
+    const bool commandExpected =
+        ending == "approved" || ending == "denied" || ending == "manual-lock";
+    if (commandExpected)
+      QTRY_COMPARE(server.commands.size(), 1);
+    // An explicit failure may present the main window; a subsequent stale
+    // notification must not present it again after the user hides it.
+    window.hide();
+    notifications.action(notifications.lastId);
+    QTest::qWait(50);
+    QVERIFY(!window.isVisible());
+    QVERIFY(!visibleApproval());
+    QCOMPARE(server.commands.size(), commandExpected ? 1 : 0);
+  }
+  void notificationFailureDoesNotAffectApproval() {
+    QFETCH(int, mode);
+    std::unique_ptr<NotificationServer> notifications;
+    if (mode) {
+      notifications = std::make_unique<NotificationServer>();
+      notifications->fail = mode == 1;
+      notifications->hold = mode == 2;
+    }
+    FakeService server;
+    Window window(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"), {},
+                  server.path(), {});
+    QTRY_VERIFY(visibleApproval());
+    QPointer<ApprovalDialog> dialog = visibleApproval();
+    window.hide();
+    auto *notification = window.findChild<ApprovalNotification *>();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        notification->findChildren<QDBusPendingCallWatcher *>().isEmpty(), 4000);
+    QVERIFY(dialog && dialog->isLive() && dialog->isVisible());
+    QVERIFY(!window.isVisible());
+    dialog->findChild<QPushButton *>("approve")->click();
+    QTRY_COMPARE(server.commands.size(), 1);
+    QCOMPARE(server.commands[0]["command"].toString(), QString("approve"));
+    QCOMPARE(server.commands[0]["token"].toString(), QString("internal-123"));
+  }
   void nativeApprovalPreview() {
     if (!qEnvironmentVariableIsSet("YUBIQUITY_NATIVE_TEST"))
       QSKIP("Run tests/desktop_native.py on its private Xvfb display");
