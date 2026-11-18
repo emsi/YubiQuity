@@ -143,7 +143,7 @@ remaining limits and how the encrypted file behaves while unlocked.
 
 ```bash
 # Ubuntu 24.04 / compatible Debian systems, inside the environment being built:
-sudo apt-get install cmake pkg-config libxcb1-dev qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins qt6-wayland pinentry-qt
+sudo apt-get install cmake pkg-config libxcb1-dev qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins qt6-wayland pinentry-qt dbus-daemon
 ./scripts/desktop.sh run \
     --vault "$HOME/.local/share/yubiquity/host-test/credentials.yq"
 ```
@@ -182,6 +182,13 @@ consistent result, since compositor-initiated minimization is not reported to th
 application by [xdg-shell](https://wayland.app/protocols/xdg-shell#xdg_toplevel:request:set_minimized).
 See the [host GUI walkthrough](docs/host-testing.md#graphical-interface-and-virtual-desktops).
 
+Desktop notifications recall only the exact approval they describe, while it is
+still pending. Old or unrelated notification clicks cannot open the main window
+or a later request. Notifications are withdrawn when their approval ends;
+dismissing a notification does not cancel the approval. Notifications are optional:
+if the desktop service is unavailable or does not support actions, use the tray
+icon to recall the dialog. Notification recall never extends the approval deadline.
+
 The request token remains internal. Cancel/Escape/window close denies that exact
 request; expiry, browser cancellation and disconnect remove the dialog. Enter
 defaults to Cancel. A lost desktop watch connection locks the service, and owned
@@ -198,7 +205,9 @@ hosts must not need that option. The Rust `control watch` command provides
 bounded version-1 JSON snapshots; this is the desktop bridge, not a key-export API.
 
 Offline GUI tests exercise real Qt widgets, the Rust socket client, exact-token
-decisions, cancellation/disconnect, deadlines and encrypted-vault FD input:
+decisions, cancellation/disconnect, deadlines and encrypted-vault FD input.
+CTest runs the controller/notification suite on a private session bus using
+`dbus-run-session` (from `dbus-daemon`, needed when building tests):
 
 ```bash
 ./scripts/desktop.sh build

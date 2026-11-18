@@ -159,7 +159,7 @@ void ApprovalDialog::shortenLifetime(qint64 remaining) {
 void ApprovalDialog::choose(bool yes) {
   if (decided)
     return;
-  if (elapsed.elapsed() >= deadline) {
+  if (!isLive()) {
     decided = true;
     hide();
     emit expired();
