@@ -58,6 +58,8 @@ def main():
     if output("dpkg", "--print-architecture") != "amd64":
         raise SystemExit("This release target is amd64.")
     version = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["version"]
+    # Debian's tilde sorts prereleases before the corresponding final release.
+    debian_version = version.replace("-", "~", 1) + "-1"
     subprocess.run([str(ROOT / "scripts/desktop.sh"), "build"], check=True)
     assets = ROOT / "target/release-assets" / f"v{version}"
     assets.mkdir(parents=True, exist_ok=True)
@@ -102,7 +104,7 @@ def main():
         dependencies += ", pinentry-qt, qt6-qpa-plugins, qt6-wayland, fido2-tools, udev, kmod, passwd, acl, pkexec, polkitd"
         size = sum(p.stat().st_size for p in (tree / "usr").rglob("*") if p.is_file())
         (control / "control").write_text(
-            f"Package: yubiquity\nVersion: {version}-1\nArchitecture: amd64\n"
+            f"Package: yubiquity\nVersion: {debian_version}\nArchitecture: amd64\n"
             "Section: utils\nPriority: optional\n"
             "Maintainer: Mariusz Woloszyn <emsi@users.noreply.github.com>\n"
             f"Installed-Size: {(size + 1023) // 1024}\nDepends: {dependencies}\n"
@@ -112,7 +114,8 @@ def main():
             " native approval dialogs and a system tray. Intended for testing;\n"
             " no hardware protection or trusted manufacturer attestation.\n")
         manifest = {
-            "version": version, "commit": output("git", "rev-parse", "HEAD"),
+            "version": version, "debian_version": debian_version,
+            "commit": output("git", "rev-parse", "HEAD"),
             "dirty": bool(output("git", "status", "--porcelain")),
             "target": "ubuntu-24.04-amd64", "rustc": output("rustc", "--version"),
             "dependencies": dependencies,
@@ -123,7 +126,7 @@ def main():
         (control / "md5sums").write_text("".join(
             f"{hashlib.md5(p.read_bytes(), usedforsecurity=False).hexdigest()}  {p.relative_to(tree)}\n"
             for p in sorted((tree / "usr").rglob("*")) if p.is_file()))
-        artifact = assets / f"yubiquity_{version}-1_amd64.deb"
+        artifact = assets / f"yubiquity_{debian_version}_amd64.deb"
         subprocess.run(["dpkg-deb", "--root-owner-group", "--build", str(tree), str(artifact)], check=True)
         (assets / "build.json").write_text(json.dumps(manifest, indent=2) + "\n")
         names = (artifact.name, "build.json")

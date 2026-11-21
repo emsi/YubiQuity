@@ -52,6 +52,11 @@ class ReleasePackage(unittest.TestCase):
             self.assertEqual(hashlib.md5((self.root / name).read_bytes(), usedforsecurity=False).hexdigest(), expected)
         doc = self.root / "usr/share/doc/yubiquity"
         manifest = json.loads((doc / "build.json").read_text())
+        package_version = run("dpkg-deb", "-f", str(PACKAGE), "Version").stdout.strip()
+        self.assertEqual(package_version, manifest.get("debian_version", manifest["version"] + "-1"))
+        if "-" in manifest["version"]:
+            final_version = manifest["version"].split("-", 1)[0] + "-1"
+            run("dpkg", "--compare-versions", package_version, "lt", final_version)
         for name, expected in manifest["sha256"].items():
             executable = self.root / "usr/bin" / name
             self.assertEqual(hashlib.sha256(executable.read_bytes()).hexdigest(), expected)
