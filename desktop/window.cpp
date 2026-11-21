@@ -72,7 +72,8 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
   connect(setup, &SetupPage::openVault, this, [this] { selectVault(false); });
   connect(setup, &SetupPage::unlockVault, unlock, &QPushButton::click);
   connect(setup, &SetupPage::configurePin, this, [this] {
-    if (!busy && !sessionLocked && model.state == "ready" && model.pinKnown) {
+    if (!busy && !sessionLocked && !sleeping && model.state == "ready" &&
+        model.pinKnown) {
       erase(currentPin);
       promptPin(model.pinConfigured);
     }
@@ -110,8 +111,16 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
   notification = new ApprovalNotification(this);
   connect(notification, &ApprovalNotification::activated, this,
           [this](const QString &request) {
-            if (sessionLocked || stopping || busy || model.state != "ready" ||
-                !approval || model.pending.token != request ||
+            if (!sessionLocked && !sleeping && !stopping && unlockRequest &&
+                model.state == "locked" &&
+                model.unlockRequest.token == request &&
+                unlockRequest->token() == request && unlockRequest->isLive()) {
+              presentWindow(*unlockRequest);
+              return;
+            }
+            if (sessionLocked || sleeping || stopping || busy ||
+                model.state != "ready" || !approval ||
+                model.pending.token != request ||
                 approval->token() != request || !approval->isLive())
               return;
             // Recall only this approval; never fall back to the main window.
@@ -124,7 +133,7 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
   connect(quit, &QPushButton::clicked, qApp, &QApplication::quit);
   connect(unlock, &QPushButton::clicked, this, [this] {
     if (model.state == "locked")
-      promptSecret();
+      promptSecret(false, model.unlockRequest.token);
     else
       startService(true);
   });
@@ -194,6 +203,10 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
 Window::~Window() { stopService(); }
 
 void Window::Show() {
+  if (unlockRequest) {
+    presentWindow(*unlockRequest);
+    return;
+  }
   if (approval) {
     presentWindow(*approval);
     return;
@@ -229,11 +242,14 @@ void Window::closeEvent(QCloseEvent *event) {
 
 void Window::setBusy(bool value) {
   busy = value;
+  if (unlockRequest)
+    unlockRequest->setWorking(value);
   updateButtons();
 }
 
 void Window::updateButtons() {
-  unlock->setEnabled(!busy && !sessionLocked && model.state != "ready" &&
+  unlock->setEnabled(!busy && !sessionLocked && !sleeping &&
+                     model.state != "ready" &&
                      (!vault.isEmpty() || !externalSocket.isEmpty()));
   lock->setEnabled(model.state == "ready" || busy);
   choose->setEnabled(!busy && model.state != "ready" &&
@@ -277,7 +293,8 @@ void Window::startService(bool askUnlock) {
     return;
   }
   socket = runtime->path() + "/control.sock";
-  QStringList arguments{"serve", "--vault", vault, "--socket", socket};
+  QStringList arguments{"serve",    "--vault", vault,
+                        "--socket", socket,    "--unlock-on-request"};
   if (!helper.isEmpty())
     arguments << "--node-helper" << helper;
   protectChild(service);
@@ -300,6 +317,13 @@ void Window::stopService() {
   if (stopping)
     return;
   stopping = true;
+  if (sessionCommand) {
+    sessionCommand->disconnect(this);
+    sessionCommand->cancel();
+    sessionCommand->deleteLater();
+    sessionCommand = nullptr;
+  }
+  dismissUnlockRequest();
   startup.stop();
   heartbeat.stop();
   dismissApproval();
@@ -379,8 +403,11 @@ void Window::readSnapshots() {
       if (externalSocket.isEmpty())
         settings.setValue("vault", vault);
     }
+    if (initial && (sessionLocked || sleeping))
+      syncSession();
     applySnapshot();
-    if (initial && model.state == "locked") {
+    if (initial && model.state == "locked" && !sessionLocked && !sleeping &&
+        !stopping) {
       if (!heldSecret.isEmpty()) {
         auto secret = heldSecret;
         heldSecret.clear();
@@ -395,9 +422,9 @@ void Window::readSnapshots() {
 }
 
 void Window::dismissApproval() {
-  notification->clear();
   if (!approval)
     return;
+  notification->clear();
   approval->disconnect(this);
   approval->hide();
   // It is deliberately not a child/transient of the vault window. Reparent only
@@ -409,23 +436,99 @@ void Window::dismissApproval() {
   approval = nullptr;
 }
 
-void Window::applySnapshot() {
-  updateButtons();
-  if (sessionLocked) {
-    if (model.state == "ready")
-      lockVault();
+void Window::dismissUnlockRequest() {
+  if (unlockRequest) {
+    notification->clear();
+    unlockRequest->disconnect(this);
+    unlockRequest->hide();
+    unlockRequest->setParent(this);
+    unlockRequest->deleteLater();
+    unlockRequest = nullptr;
+  }
+  if (!unlockToken.isEmpty()) {
+    unlockToken.clear();
+    if (pinentry) {
+      pinentry->disconnect(this);
+      pinentry->cancel();
+      pinentry->deleteLater();
+      pinentry = nullptr;
+    }
+    if (command) {
+      command->disconnect(this);
+      command->cancel();
+      command->deleteLater();
+      command = nullptr;
+    }
+    setBusy(false);
+  }
+}
+
+void Window::denyUnlock(const QString &token) {
+  dismissedToken = token;
+  dismissUnlockRequest();
+  runCommand({"control", "--socket", socket, "deny", token}, {}, false,
+             [](bool, QByteArray, const QString &) {});
+}
+
+void Window::applyUnlockRequest() {
+  const auto &request = model.unlockRequest;
+  if (request.token.isEmpty()) {
+    dismissUnlockRequest();
     return;
   }
+  if (unlockRequest && unlockRequest->token() == request.token) {
+    unlockRequest->shortenLifetime(request.remaining);
+    return;
+  }
+  dismissUnlockRequest();
+  dismissApproval();
+  if (request.token == dismissedToken || busy)
+    return;
+  unlockRequest = new ApprovalDialog(request);
+  unlockRequest->setObjectName("unlockRequestDialog");
+  connect(unlockRequest, &ApprovalDialog::decision, this,
+          [this](const QString &token, bool proceed) {
+            if (proceed)
+              promptSecret(false, token);
+            else
+              denyUnlock(token);
+          });
+  connect(unlockRequest, &ApprovalDialog::expired, this, [this] {
+    if (unlockRequest)
+      denyUnlock(unlockRequest->token());
+  });
+  presentWindow(*unlockRequest);
+  notification->show(request.token, true);
+  // Use the established secret prompt; the request window provides retry,
+  // cancellation, a deadline and safe notification recall behind it.
+  QTimer::singleShot(0, this, [this, token = request.token] {
+    if (unlockRequest && unlockRequest->token() == token)
+      promptSecret(false, token);
+  });
+}
+
+void Window::applySnapshot() {
+  updateButtons();
+  if (sessionLocked || sleeping) {
+    status->setText(tr("Locked"));
+    describe(tr("Unlock your desktop to use YubiQuity."));
+    return;
+  }
+  applyUnlockRequest();
   status->setText(model.state == "ready" ? tr("Ready") : tr("Locked"));
   tray->setToolTip(model.state == "ready" ? tr("YubiQuity — ready")
                                           : tr("YubiQuity — locked"));
-  if (displayedState != model.state) {
+  const auto displayState =
+      model.state + (model.wakeAvailable ? ":available" : ":unavailable");
+  if (displayedState != displayState) {
     hideWhenReady = model.state == "ready";
-    displayedState = model.state;
+    displayedState = displayState;
     detail->setText(
         model.state == "ready"
             ? tr("Choose “Security key” in your browser. A confirmation will "
                  "open when it needs your approval.")
+        : model.wakeAvailable
+            ? tr("Locked — YubiQuity will ask you to unlock when needed.")
             : tr("Unlock to make your software security key available to "
                  "browsers."));
   }
@@ -436,7 +539,8 @@ void Window::applySnapshot() {
   }
   if (model.pending.token.isEmpty()) {
     dismissApproval();
-    dismissedToken.clear();
+    if (model.unlockRequest.token.isEmpty())
+      dismissedToken.clear();
     return;
   }
   if (busy) {
@@ -464,7 +568,8 @@ void Window::applySnapshot() {
       [this](const QString &token, bool yes) {
         dismissedToken = token;
         dismissApproval();
-        if (sessionLocked || busy || model.pending.token != token)
+        if (sessionLocked || sleeping || stopping || busy ||
+            model.pending.token != token)
           return;
         setBusy(true);
         runCommand(
@@ -499,67 +604,82 @@ void Window::runCommand(const QStringList &arguments, QByteArray secret,
   erase(secret);
 }
 
-void Window::promptSecret(bool newVault) {
-  if (busy || sessionLocked)
+void Window::promptSecret(bool newVault, const QString &token) {
+  if (busy || sessionLocked || sleeping ||
+      (!token.isEmpty() && (!unlockRequest || !unlockRequest->isLive() ||
+                            model.unlockRequest.token != token)))
     return;
+  unlockToken = token;
   setBusy(true);
   auto *prompt = new Pinentry(this);
   pinentry = prompt;
   connect(prompt, &Pinentry::failed, this,
-          [this, prompt](const QString &message) {
+          [this, prompt, token](const QString &message) {
             pinentry = nullptr;
             prompt->deleteLater();
             if (!stopping) {
               setBusy(false);
               describe(message);
+              if (!token.isEmpty())
+                denyUnlock(token);
             }
           });
-  connect(prompt, &Pinentry::secretReady, this,
-          [this, prompt, newVault](QByteArray secret) {
-            pinentry = nullptr;
-            prompt->deleteLater();
-            if (sessionLocked || stopping) {
-              erase(secret);
-              return;
-            }
-            if (!newVault) {
-              unlockWith(secret);
-              erase(secret);
-              return;
-            }
-            // Retain only until the new vault is opened; no second unlock
-            // prompt.
-            heldSecret = secret;
-            runCommand({"init", "--vault", vault, "--passphrase-fd", "198"},
-                       secret, true,
-                       [this](bool ok, QByteArray, const QString &error) {
-                         if (!ok) {
-                           erase(heldSecret);
-                           setBusy(false);
-                           describe(error);
-                           return;
-                         }
-                         settings.setValue("vault", vault);
-                         auto secret = heldSecret;
-                         heldSecret.clear();
-                         startService();
-                         if (service.state() != QProcess::NotRunning)
-                           heldSecret = secret;
-                         erase(secret);
-                       });
-            erase(secret);
-          });
+  connect(
+      prompt, &Pinentry::secretReady, this,
+      [this, prompt, newVault, token](QByteArray secret) {
+        pinentry = nullptr;
+        prompt->deleteLater();
+        if (sessionLocked || sleeping || stopping ||
+            (!token.isEmpty() && (!unlockRequest || !unlockRequest->isLive() ||
+                                  model.unlockRequest.token != token))) {
+          erase(secret);
+          return;
+        }
+        if (!newVault) {
+          unlockWith(secret, token);
+          erase(secret);
+          return;
+        }
+        // Retain only until the new vault is opened; no second unlock
+        // prompt.
+        heldSecret = secret;
+        runCommand({"init", "--vault", vault, "--passphrase-fd", "198"}, secret,
+                   true, [this](bool ok, QByteArray, const QString &error) {
+                     if (!ok) {
+                       erase(heldSecret);
+                       setBusy(false);
+                       describe(error);
+                       return;
+                     }
+                     settings.setValue("vault", vault);
+                     auto secret = heldSecret;
+                     heldSecret.clear();
+                     startService();
+                     if (service.state() != QProcess::NotRunning)
+                       heldSecret = secret;
+                     erase(secret);
+                   });
+        erase(secret);
+      });
   prompt->start(newVault);
 }
 
-void Window::unlockWith(QByteArray secret) {
+void Window::unlockWith(QByteArray secret, const QString &token) {
   setBusy(true);
   status->setText(tr("Unlocking…"));
+  QStringList arguments{"control", "--socket",        socket,
+                        "unlock",  "--passphrase-fd", "198"};
+  if (!token.isEmpty())
+    arguments << "--request-token" << token;
   runCommand(
-      {"control", "--socket", socket, "unlock", "--passphrase-fd", "198"},
-      secret, true, [this](bool ok, QByteArray, const QString &error) {
+      arguments, secret, true,
+      [this, token](bool ok, QByteArray, const QString &error) {
         setBusy(false);
         if (!ok) {
+          if (!token.isEmpty() && unlockRequest &&
+              unlockRequest->token() == token)
+            unlockRequest->showError(
+                tr("Unlock failed. Check the passphrase and try again."));
           status->setText(tr("Locked"));
           describe(
               tr("Unlock failed. Check the vault passphrase and try again.\n%1")
@@ -571,7 +691,7 @@ void Window::unlockWith(QByteArray secret) {
 }
 
 void Window::promptPin(bool askCurrent) {
-  if (sessionLocked || stopping || model.state != "ready") {
+  if (sessionLocked || sleeping || stopping || model.state != "ready") {
     erase(currentPin);
     return;
   }
@@ -593,7 +713,7 @@ void Window::promptPin(bool askCurrent) {
       [this, prompt, askCurrent](QByteArray secret) {
         pinentry = nullptr;
         prompt->deleteLater();
-        if (sessionLocked || stopping || model.state != "ready") {
+        if (sessionLocked || sleeping || stopping || model.state != "ready") {
           erase(secret);
           erase(currentPin);
           return;
@@ -674,6 +794,16 @@ void Window::selectVault(bool newVault) {
 }
 
 void Window::lockVault() {
+  erase(heldSecret);
+  erase(currentPin);
+  if (model.wakeSupported) {
+    dismissUnlockRequest();
+    if (pinentry)
+      pinentry->cancel();
+    if (command)
+      command->cancel();
+    setBusy(false);
+  }
   if (busy || model.state.isEmpty()) {
     stopService();
     status->setText(tr("Locked"));
@@ -692,18 +822,59 @@ void Window::lockVault() {
 
 void Window::screenLocked(bool locked) {
   sessionLocked = locked;
-  if (locked) {
-    stopService();
-    status->setText(tr("Locked"));
-  }
-  updateButtons();
+  syncSession();
 }
 
-void Window::sleepChanged(bool sleeping) {
-  if (sleeping) {
-    stopService();
+void Window::sleepChanged(bool value) {
+  sleeping = value;
+  syncSession();
+}
+
+void Window::syncSession() {
+  const bool active = !sessionLocked && !sleeping;
+  displayedState.clear();
+  if (!active) {
+    erase(heldSecret);
+    erase(currentPin);
+    dismissUnlockRequest();
+    dismissApproval();
+    if (pinentry)
+      pinentry->cancel();
+    if (command)
+      command->cancel();
     status->setText(tr("Locked"));
+    describe(tr("Unlock your desktop to use YubiQuity."));
   }
+  updateButtons();
+  if (!model.wakeSupported) {
+    if (!active)
+      stopService();
+    return;
+  }
+  if (sessionCommand || stopping)
+    return;
+  auto *job = new Command(this);
+  sessionCommand = job;
+  connect(job, &Command::finished, this,
+          [this, job, active](bool ok, QByteArray, const QString &error) {
+            sessionCommand = nullptr;
+            job->deleteLater();
+            if (stopping)
+              return;
+            if (!ok) {
+              failure(
+                  tr("Could not secure the device session.\n%1").arg(error));
+              return;
+            }
+            if (active != (!sessionLocked && !sleeping))
+              syncSession();
+            else
+              applySnapshot();
+          });
+  job->start(backend,
+             {"control", "--socket", socket, "session", "--active",
+              active ? "true" : "false"},
+             {}, false, 5000);
 }
 
 void Window::monitorSession() {
@@ -723,7 +894,8 @@ void Window::monitorSession() {
       QDBusPendingReply<bool> reply = *pending;
       if (!reply.isError()) {
         sessionNote->setText(tr("Locks when the desktop reports screen lock. "
-                                "After restart or sleep, unlock explicitly."));
+                                "Returning to the desktop leaves the vault "
+                                "locked."));
         if (reply.value())
           screenLocked(true);
       }

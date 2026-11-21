@@ -159,7 +159,12 @@ Stop any existing foreground daemon using that vault first; use **Lock and quit*
 to exit an older GUI before launching a rebuilt version. Launch as your normal
 desktop user, never with `sudo`. The launcher reports an already-running GUI and
 stops; it does not silently activate an older process after rebuilding. The app
-owns a locked service, offers Unlock, and attaches the key only after unlock.
+owns a locked service, offers Unlock, and attaches the key after the first manual
+unlock. Subsequent locks clear vault secrets while keeping the device available:
+an interactive security-key request opens a request-bound unlock prompt, followed
+by the normal PIN and approval steps. Discovery queries stay silent. No secret
+is cached for reopening the vault; restart or changed vault metadata requires a
+new manual unlock.
 After finishing onboarding, the main window hides to the
 tray automatically when ready. Setup remains visible while you work through it. Open/create another vault from the main window. **Hide to
 tray** and closing the main window keep the app running when a tray is available;
@@ -193,7 +198,9 @@ The request token remains internal. Cancel/Escape/window close denies that exact
 request; expiry, browser cancellation and disconnect remove the dialog. Enter
 defaults to Cancel. A lost desktop watch connection locks the service, and owned
 child processes die with the app. Screen-lock signals from supported KDE/GNOME
-interfaces and login1 sleep notifications trigger locking; unavailable monitoring
+interfaces and login1 sleep notifications clear secrets and cancel requests.
+Prompts are suppressed until the session returns, then the device is available
+but remains locked. A lost/unresponsive service still detaches. Unavailable monitoring
 is reported. Actual host panel integration, focus preferences and screen-lock/
 suspend behavior still need host validation. No claim of universal session-lock
 coverage is made.
@@ -381,6 +388,16 @@ display text. Approvals acknowledge acceptance of that decision, not successful
 completion of a browser ceremony. An unmatched, expired or cancelled token fails.
 `lock` acknowledges only after detach and worker cleanup, releases the vault
 writer lock, and invalidates PIN tokens; the service stays running but locked.
+
+The desktop opts into `serve --unlock-on-request`. In that mode, after the first
+manual unlock, `lock` clears the vault and PIN authorization state but keeps HID
+attached. Status/watch snapshots additionally expose `wake_available` and a
+separate `unlock_request`; `control unlock --request-token TOKEN` must match that
+live request. `control deny TOKEN` cancels it. Unlock does not approve a credential
+operation. `control session --active false` also suppresses interactive requests;
+`--active true` restores availability without unlocking. These commands use the
+same private, same-user control socket. The ordinary CLI service retains its
+detach-on-lock behavior.
 
 Service clients are one-shot commands. **Disconnecting a client does not lock the
 service**: explicitly lock it or stop the service when finished. No client/no

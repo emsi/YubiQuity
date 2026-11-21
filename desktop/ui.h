@@ -19,7 +19,8 @@ public:
   bool update(const QJsonObject &event, QString &error);
   QString state;
   bool pinKnown = false, pinConfigured = false;
-  Pending pending;
+  bool wakeSupported = false, wakeAvailable = false;
+  Pending pending, unlockRequest;
 
 private:
   qint64 sequence = 0;
@@ -32,6 +33,8 @@ public:
   void shortenLifetime(qint64 remaining);
   QString token() const { return request.token; }
   bool isLive() const { return !decided && elapsed.elapsed() < deadline; }
+  void setWorking(bool working) { approve->setEnabled(!working && isLive()); }
+  void showError(const QString &text);
 signals:
   void decision(QString token, bool approve);
   void expired();
@@ -46,5 +49,6 @@ private:
   QTimer timeout;
   qint64 deadline;
   bool decided = false;
+  class QLabel *errorLabel;
   void choose(bool yes);
 };

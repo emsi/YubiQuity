@@ -1,11 +1,13 @@
 //! Foreground service: keep HID I/O responsive while authorization/signing/storage
 //! run on one bounded worker. A cancelled generation can never finish a new request.
+mod locked;
 use crate::authenticator::{Authenticator, CtapResult, Prompt, RequestContext, Status};
 use crate::control::{self, Request, RequestId, Response};
 use crate::hid::{Engine, Event, Transaction};
 use crate::store::Store;
 use crate::uhid::Device;
 use anyhow::Result;
+use locked::{Action as LockedAction, Locked, Unlocking, Waiting};
 use rand_core::{OsRng, RngCore};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
@@ -247,12 +249,14 @@ impl Drop for Worker {
 /// error must not leave a device attached while waiting for worker cleanup.
 struct Attachment<D> {
     device: D,
-    worker: Worker,
+    worker: Option<Worker>,
 }
 
 impl<D> Drop for Attachment<D> {
     fn drop(&mut self) {
-        self.worker.shutdown.store(true, Ordering::Release);
+        if let Some(worker) = &self.worker {
+            worker.shutdown.store(true, Ordering::Release);
+        }
     }
 }
 
@@ -321,18 +325,46 @@ fn snapshot(approval: Option<&Approval>) -> Response {
     }))
 }
 
+fn request_token(transaction: Transaction) -> Result<String> {
+    let mut nonce = [0u8; 16];
+    OsRng
+        .try_fill_bytes(&mut nonce)
+        .map_err(|e| anyhow::anyhow!("request randomness: {e}"))?;
+    Ok(format!(
+        "{}-{:032x}",
+        transaction.id,
+        u128::from_ne_bytes(nonce)
+    ))
+}
+
+fn service_snapshot(
+    worker: Option<&Worker>,
+    approval: Option<&Approval>,
+    desktop: Option<&Locked>,
+) -> Response {
+    if let Some(worker) = worker {
+        let mut response = snapshot(approval);
+        response.pin_configured = Some(worker.pin_configured.load(Ordering::Acquire));
+        response.wake_available = desktop.map(|d| d.active);
+        response
+    } else {
+        desktop.expect("locked desktop state").snapshot()
+    }
+}
+
 pub fn run<S: Store + 'static>(
     authenticator: Authenticator<S>,
     options: Options,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
-    run_inner(authenticator, &options, shutdown, None).map(|_| ())
+    run_inner(authenticator, &options, shutdown, None, None).map(|_| ())
 }
 
 /// Always starts locked. No unlock secret is retained across a lock or restart.
 pub fn serve(
     vault: &Path,
     socket: &Path,
+    unlock_on_request: bool,
     options: Options,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
@@ -343,14 +375,24 @@ pub fn serve(
     Device::preflight()?;
     let mut server = control::Server::bind(socket)?;
     eprintln!("Control service listening, locked. Unlock through the local client to attach.");
+    let mut session_active = true;
+    let locked_snapshot = || {
+        let mut response = Response::locked();
+        response.wake_available = unlock_on_request.then_some(false);
+        response
+    };
     while !shutdown.load(Ordering::Acquire) {
-        server.publish(Response::locked())?;
+        server.publish(locked_snapshot())?;
         if let Some((id, request)) = server.poll()? {
             server.take_watcher_loss(); // Already locked; no keys/device remain.
             match &request {
-                Request::Watch { version } => server.watch(id, *version, Response::locked())?,
-                Request::Status {} | Request::Lock {} => server.respond(id, Response::locked())?,
-                Request::Unlock { passphrase } => {
+                Request::Watch { version } => server.watch(id, *version, locked_snapshot())?,
+                Request::Status {} | Request::Lock {} => server.respond(id, locked_snapshot())?,
+                Request::Session { active } if unlock_on_request => {
+                    session_active = *active;
+                    server.respond(id, locked_snapshot())?;
+                }
+                Request::Unlock { passphrase, token } if session_active && token.is_none() => {
                     match crate::vault::Vault::open(vault, passphrase) {
                         Ok(store) => {
                             // Drop the parsed unlock message before entering the
@@ -361,6 +403,7 @@ pub fn serve(
                                 &options,
                                 shutdown.clone(),
                                 Some((&mut server, id)),
+                                unlock_on_request.then_some(vault),
                             ) {
                                 Ok(Some(lock_id)) => server.respond(lock_id, Response::locked())?,
                                 Ok(None) => break,
@@ -379,7 +422,11 @@ pub fn serve(
                         }
                     }
                 }
-                Request::Approve { .. } | Request::Deny { .. } | Request::ConfigurePin { .. } => {
+                Request::Approve { .. }
+                | Request::Deny { .. }
+                | Request::ConfigurePin { .. }
+                | Request::Session { .. }
+                | Request::Unlock { .. } => {
                     server.respond(
                         id,
                         Response::locked().error("vault is locked; no pending request"),
@@ -397,21 +444,52 @@ fn run_inner<S: Store + 'static>(
     authenticator: Authenticator<S>,
     options: &Options,
     shutdown: Arc<AtomicBool>,
-    mut control: Option<(&mut control::Server, RequestId)>,
+    control: Option<(&mut control::Server, RequestId)>,
+    desktop_vault: Option<&Path>,
 ) -> Result<Option<RequestId>> {
     let device = Device::create(options.node_helper.as_deref())?;
+    println!("READY {} {}", device.path().display(), device.unique());
+    run_device(
+        authenticator,
+        options,
+        shutdown,
+        control,
+        desktop_vault,
+        device,
+    )
+}
+
+// The service loop also runs against a bounded in-memory transport in tests.
+// Production always constructs a real UHID Device above.
+trait HidIo {
+    fn read_report(&mut self, timeout: Duration) -> Result<Option<crate::hid::Report>>;
+    fn send_report(&mut self, report: &crate::hid::Report) -> Result<()>;
+}
+impl HidIo for Device {
+    fn read_report(&mut self, timeout: Duration) -> Result<Option<crate::hid::Report>> {
+        Device::read_report(self, timeout)
+    }
+    fn send_report(&mut self, report: &crate::hid::Report) -> Result<()> {
+        Device::send_report(self, report)
+    }
+}
+
+fn run_device<S: Store + 'static, D: HidIo>(
+    authenticator: Authenticator<S>,
+    options: &Options,
+    shutdown: Arc<AtomicBool>,
+    mut control: Option<(&mut control::Server, RequestId)>,
+    desktop_vault: Option<&Path>,
+    device: D,
+) -> Result<Option<RequestId>> {
     let clock = Instant::now();
     let mut attachment = Attachment {
         device,
-        worker: Worker::start(authenticator, clock),
+        worker: Some(Worker::start(authenticator, clock)),
     };
     let device = &mut attachment.device;
-    let worker = &attachment.worker;
-    let snapshot = |approval: Option<&Approval>| {
-        let mut response = snapshot(approval);
-        response.pin_configured = Some(worker.pin_configured.load(Ordering::Acquire));
-        response
-    };
+    let worker = &mut attachment.worker;
+    let mut desktop = desktop_vault.map(Locked::new);
     let mut configuring_pin = false;
     let input = (control.is_none() && options.test_presence.is_none()).then(input_reader);
     let mut input_ended = false;
@@ -420,9 +498,11 @@ fn run_inner<S: Store + 'static>(
     let mut active: Option<(Transaction, Arc<AtomicBool>)> = None;
     let mut approval: Option<Approval> = None;
     let mut lock_requested = None;
-    println!("READY {} {}", device.path().display(), device.unique());
     if let Some((server, id)) = &mut control {
-        server.respond(*id, snapshot(None))?;
+        server.respond(
+            *id,
+            service_snapshot(worker.as_ref(), None, desktop.as_ref()),
+        )?;
     } else if options.test_presence.is_none() {
         eprintln!("Approval: type 'approve TOKEN' or 'deny TOKEN' for the displayed request. Type 'lock' or 'quit' to detach.");
     }
@@ -433,6 +513,10 @@ fn run_inner<S: Store + 'static>(
             .is_some_and(|s| clock.elapsed() >= Duration::from_secs(s))
         {
             break;
+        }
+        if worker.is_none() && desktop.as_ref().is_some_and(|mode| !mode.unchanged()) {
+            lock_requested = Some(0);
+            break; // Public discovery metadata is stale. Require manual unlock.
         }
         let report = device.read_report(Duration::from_millis(20))?;
         let now = clock.elapsed().as_millis() as u64;
@@ -462,7 +546,41 @@ fn run_inner<S: Store + 'static>(
                         request: payload,
                         cancel,
                     };
+                    if worker.is_none() {
+                        let mode = desktop
+                            .as_mut()
+                            .expect("only desktop mode remains attached while locked");
+                        if !mode.unchanged() {
+                            events.extend(engine.complete(transaction, &[Status::Other as u8]));
+                            lock_requested = Some(0); // invalid public profile: detach, require manual unlock
+                            break;
+                        }
+                        match locked::classify(&work.request, mode.pin_configured) {
+                            LockedAction::Reply(reply) => {
+                                active = None;
+                                events.extend(engine.complete(transaction, &reply));
+                            }
+                            LockedAction::Unlock if mode.active && mode.unlocking.is_none() => {
+                                mode.waiting = Some(Waiting {
+                                    work,
+                                    token: request_token(transaction)?,
+                                    deadline: Instant::now()
+                                        + Duration::from_millis(crate::hid::OPERATION_TIMEOUT_MS),
+                                });
+                                events.extend(engine.presence_needed(transaction, now));
+                            }
+                            LockedAction::Unlock => {
+                                active = None;
+                                events.extend(
+                                    engine.complete(transaction, &[Status::OperationDenied as u8]),
+                                );
+                            }
+                        }
+                        continue;
+                    }
                     if worker
+                        .as_ref()
+                        .unwrap()
                         .input
                         .as_ref()
                         .unwrap()
@@ -485,25 +603,35 @@ fn run_inner<S: Store + 'static>(
                     {
                         approval = None;
                     }
-                    worker.invalidation.fetch_add(1, Ordering::AcqRel);
+                    if let Some(worker) = worker.as_ref() {
+                        worker.invalidation.fetch_add(1, Ordering::AcqRel);
+                    }
+                    if let Some(mode) = desktop.as_mut() {
+                        mode.cancel();
+                    }
                 }
                 Event::Resynchronize(_) => {
-                    worker.invalidation.fetch_add(1, Ordering::AcqRel);
+                    if let Some(worker) = worker.as_ref() {
+                        worker.invalidation.fetch_add(1, Ordering::AcqRel);
+                    }
+                    if let Some(mode) = desktop.as_mut() {
+                        mode.cancel();
+                    }
                 }
             }
         }
 
-        while let Ok(event) = worker.events.try_recv() {
+        while let Some(event) = worker.as_ref().and_then(|w| w.events.try_recv().ok()) {
             let emitted = match event {
                 WorkEvent::PinConfigured { id, result, fatal } => {
                     configuring_pin = false;
                     if let Some((server, _)) = &mut control {
                         let response = match result {
-                            Ok(()) => snapshot(approval.as_ref()),
-                            Err(Status::PinInvalid) => snapshot(approval.as_ref()).error("The current PIN is incorrect. Try again; attempts are unlimited."),
-                            Err(Status::PinPolicyViolation) => snapshot(approval.as_ref()).error("Use at least 4 characters and at most 63 UTF-8 bytes, with no NUL characters."),
-                            Err(Status::PinNotSet) => snapshot(approval.as_ref()).error("No PIN is configured. Refresh and choose Set PIN."),
-                            Err(_) => snapshot(approval.as_ref()).error("PIN could not be saved. Lock and try again."),
+                            Ok(()) => service_snapshot(worker.as_ref(), approval.as_ref(), desktop.as_ref()),
+                            Err(Status::PinInvalid) => service_snapshot(worker.as_ref(), approval.as_ref(), desktop.as_ref()).error("The current PIN is incorrect. Try again; attempts are unlimited."),
+                            Err(Status::PinPolicyViolation) => service_snapshot(worker.as_ref(), approval.as_ref(), desktop.as_ref()).error("Use at least 4 characters and at most 63 UTF-8 bytes, with no NUL characters."),
+                            Err(Status::PinNotSet) => service_snapshot(worker.as_ref(), approval.as_ref(), desktop.as_ref()).error("No PIN is configured. Refresh and choose Set PIN."),
+                            Err(_) => service_snapshot(worker.as_ref(), approval.as_ref(), desktop.as_ref()).error("PIN could not be saved. Lock and try again."),
                         };
                         server.respond(id, response)?;
                     }
@@ -536,11 +664,7 @@ fn run_inner<S: Store + 'static>(
                             let _ = decision.send(false);
                         }
                         None => {
-                            let mut nonce = [0u8; 8];
-                            OsRng
-                                .try_fill_bytes(&mut nonce)
-                                .map_err(|e| anyhow::anyhow!("approval nonce randomness: {e}"))?;
-                            let token = format!("{}-{}", transaction.id, u64::from_ne_bytes(nonce));
+                            let token = request_token(transaction)?;
                             if control.is_none() {
                                 println!(
                                     "APPROVAL {token} {} rp={:?} account={:?}",
@@ -591,7 +715,11 @@ fn run_inner<S: Store + 'static>(
         }
 
         if let Some((server, _)) = &mut control {
-            server.publish(snapshot(approval.as_ref()))?;
+            server.publish(service_snapshot(
+                worker.as_ref(),
+                approval.as_ref(),
+                desktop.as_ref(),
+            ))?;
             // Finite control work per HID iteration. A partial/slow client is
             // polled nonblocking and cannot monopolize report I/O/keepalives.
             for _ in 0..8 {
@@ -605,14 +733,25 @@ fn run_inner<S: Store + 'static>(
                 };
                 let response = match &request {
                     Request::Watch { version } => {
-                        server.watch(id, *version, snapshot(approval.as_ref()))?;
+                        server.watch(
+                            id,
+                            *version,
+                            service_snapshot(worker.as_ref(), approval.as_ref(), desktop.as_ref()),
+                        )?;
                         continue;
                     }
-                    Request::Status {} => snapshot(approval.as_ref()),
+                    Request::Status {} => {
+                        service_snapshot(worker.as_ref(), approval.as_ref(), desktop.as_ref())
+                    }
                     Request::ConfigurePin { current, new } => {
-                        if active.is_some() || configuring_pin {
-                            snapshot(approval.as_ref()).error("A browser request or PIN update is in progress. Finish it and try again.")
+                        if worker.is_none() {
+                            service_snapshot(worker.as_ref(), None, desktop.as_ref())
+                                .error("vault is locked")
+                        } else if active.is_some() || configuring_pin {
+                            service_snapshot(worker.as_ref(), approval.as_ref(), desktop.as_ref()).error("A browser request or PIN update is in progress. Finish it and try again.")
                         } else if worker
+                            .as_ref()
+                            .unwrap()
                             .input
                             .as_ref()
                             .unwrap()
@@ -623,19 +762,75 @@ fn run_inner<S: Store + 'static>(
                             })
                             .is_err()
                         {
-                            snapshot(approval.as_ref()).error("The key is busy. Try again.")
+                            service_snapshot(worker.as_ref(), approval.as_ref(), desktop.as_ref())
+                                .error("The key is busy. Try again.")
                         } else {
                             configuring_pin = true;
+                            continue;
+                        }
+                    }
+                    Request::Unlock { passphrase, token } if worker.is_none() => {
+                        let mode = desktop.as_mut().unwrap();
+                        if !mode.active
+                            || mode.unlocking.is_some()
+                            || !mode.unchanged()
+                            || token
+                                .as_ref()
+                                .map_or(mode.waiting.is_some(), |t| !mode.matches(t))
+                        {
+                            mode.snapshot()
+                                .error("unlock request is no longer available")
+                        } else {
+                            mode.unlocking = Some(Unlocking::start(
+                                id,
+                                token.clone(),
+                                mode.path.clone(),
+                                Zeroizing::new(passphrase.clone()),
+                            ));
                             continue;
                         }
                     }
                     Request::Unlock { .. } => {
                         Response::ready(None).error("vault is already unlocked")
                     }
+                    Request::Lock {} | Request::Session { .. } if desktop.is_some() => {
+                        let mode = desktop.as_mut().unwrap();
+                        if let Request::Session { active } = &request {
+                            mode.active = *active;
+                        }
+                        if !matches!(request, Request::Session { active: true }) {
+                            for event in mode.lock(worker, &mut approval, &mut active, &mut engine)
+                            {
+                                if let Event::Send(report) = event {
+                                    device.send_report(&report)?;
+                                }
+                            }
+                            configuring_pin = false;
+                        }
+                        service_snapshot(worker.as_ref(), approval.as_ref(), desktop.as_ref())
+                    }
+                    Request::Session { .. } => {
+                        Response::ready(None).error("desktop mode is not enabled")
+                    }
                     Request::Lock {} => {
-                        // Reply only after device detach and worker/key cleanup.
+                        // Legacy/headless lock always detaches before replying.
                         lock_requested = Some(id);
                         break;
+                    }
+                    Request::Deny { token } if worker.is_none() => {
+                        let mode = desktop.as_mut().unwrap();
+                        if mode.matches(token) {
+                            for event in mode.lock(worker, &mut approval, &mut active, &mut engine)
+                            {
+                                if let Event::Send(report) = event {
+                                    device.send_report(&report)?;
+                                }
+                            }
+                            mode.snapshot()
+                        } else {
+                            mode.snapshot()
+                                .error("no pending unlock matches that token")
+                        }
                     }
                     Request::Approve { token } | Request::Deny { token } => {
                         if approval.as_ref().is_some_and(|pending| {
@@ -657,6 +852,62 @@ fn run_inner<S: Store + 'static>(
                     }
                 };
                 server.respond(id, response)?;
+            }
+        }
+
+        if let Some(mode) = desktop.as_mut() {
+            if let Some(task) = &mode.unlocking {
+                if task.started.elapsed() >= Duration::from_secs(20)
+                    || !control
+                        .as_mut()
+                        .is_some_and(|(server, _)| server.keep_unlock_client(task.id))
+                {
+                    task.cancelled.store(true, Ordering::Release);
+                }
+            }
+            let completion =
+                mode.unlocking
+                    .as_ref()
+                    .and_then(|task| match task.result.try_recv() {
+                        Ok(result) => Some(result),
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            Some(Err(anyhow::anyhow!("unlock worker stopped")))
+                        }
+                        Err(mpsc::TryRecvError::Empty) => None,
+                    });
+            if let Some(result) = completion {
+                let task = mode.unlocking.take().unwrap();
+                let live = !task.cancelled.load(Ordering::Acquire)
+                    && mode.active
+                    && lock_requested.is_none()
+                    && task.token.as_ref().is_none_or(|token| mode.matches(token));
+                let response = match result {
+                    Ok(store) if live => {
+                        *worker = Some(Worker::start(Authenticator::software(store, 0), clock));
+                        if let Some(waiting) = mode.waiting.take() {
+                            worker
+                                .as_ref()
+                                .unwrap()
+                                .input
+                                .as_ref()
+                                .unwrap()
+                                .try_send(Job::Ctap(waiting.work))
+                                .map_err(|_| anyhow::anyhow!("unlock worker unavailable"))?;
+                        }
+                        service_snapshot(worker.as_ref(), approval.as_ref(), Some(mode))
+                    }
+                    result => {
+                        drop(result);
+                        mode.snapshot().error(if live {
+                            "vault unlock failed"
+                        } else {
+                            "unlock request expired or cancelled"
+                        })
+                    }
+                };
+                if let Some((server, _)) = &mut control {
+                    server.respond(task.id, response)?;
+                }
             }
         }
 
@@ -703,6 +954,9 @@ fn run_inner<S: Store + 'static>(
     }
     Ok(lock_requested)
 }
+
+#[cfg(test)]
+mod wake_tests;
 
 #[cfg(test)]
 mod tests {
@@ -763,14 +1017,14 @@ mod tests {
                         shutdown: shutdown.clone(),
                         detached,
                     },
-                    worker: Worker {
+                    worker: Some(Worker {
                         input: None,
                         events,
                         shutdown: shutdown.clone(),
                         invalidation: Arc::new(AtomicU64::new(0)),
                         pin_configured: Arc::new(AtomicBool::new(false)),
                         join: Some(join),
-                    },
+                    }),
                 };
                 if fail {
                     Err(anyhow::anyhow!("injected service I/O failure"))?;

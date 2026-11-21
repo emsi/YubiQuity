@@ -228,7 +228,13 @@ fn delayed_attachment_reply_gets_a_fresh_bounded_flush_window() {
     client
         .set_read_timeout(Some(Duration::from_secs(1)))
         .unwrap();
-    send_request(&mut client, &Request::Unlock { passphrase: vec![] });
+    send_request(
+        &mut client,
+        &Request::Unlock {
+            passphrase: vec![],
+            token: None,
+        },
+    );
     let (id, _) = server.poll().unwrap().unwrap();
     server.clients[0].accepted -= CLIENT_LIFETIME * 2;
     server
@@ -252,6 +258,26 @@ fn receive_json(stream: &mut UnixStream) -> serde_json::Value {
     let mut bytes = vec![0; u32::from_be_bytes(length) as usize];
     stream.read_exact(&mut bytes).unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+#[test]
+fn asynchronous_unlock_lease_ends_when_the_caller_disconnects() {
+    let directory = private_temp();
+    let path = directory.path().join("control.sock");
+    let mut server = Server::bind(&path).unwrap();
+    let mut client = connect(&path).unwrap();
+    send_request(
+        &mut client,
+        &Request::Unlock {
+            passphrase: vec![],
+            token: Some("request".into()),
+        },
+    );
+    let (id, _) = server.poll().unwrap().unwrap();
+    assert!(server.keep_unlock_client(id));
+    drop(client);
+    assert!(!server.keep_unlock_client(id));
+    assert!(!server.keep_unlock_client(id + 1));
 }
 
 #[test]

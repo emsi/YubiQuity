@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 // ClientPIN has no "unlimited" retry value. Always advertise its normal full
 // budget, without enforcing or persisting an attempt limit. This intentionally
 // differs from CTAP's lockout policy for this software authenticator.
-const REPORTED_RETRIES: u8 = 8;
+pub(crate) const REPORTED_RETRIES: u8 = 8;
 
 #[derive(Default)]
 pub struct PinRuntime {

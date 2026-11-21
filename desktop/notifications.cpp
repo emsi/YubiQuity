@@ -44,11 +44,12 @@ void ApprovalNotification::clear() {
   close(previousOwner, previousId);
 }
 
-void ApprovalNotification::show(const QString &requestToken) {
+void ApprovalNotification::show(const QString &requestToken, bool unlock) {
   clear();
   if (requestToken.isEmpty())
     return;
   request = requestToken;
+  unlocking = unlock;
   const auto sequence = generation;
   // Resolve asynchronously and do not activate a missing notification service.
   auto message = QDBusMessage::createMethodCall(
@@ -79,7 +80,9 @@ void ApprovalNotification::send(const QString &serviceOwner, quint64 sequence) {
   // approval's notification. The five-second display hint is not its validity.
   message << QStringLiteral("YubiQuity") << uint(0)
           << QStringLiteral("dialog-password") << tr("YubiQuity")
-          << tr("A passkey request needs your confirmation.")
+          << (unlocking
+                  ? tr("Unlock YubiQuity to continue a security-key request.")
+                  : tr("A passkey request needs your confirmation."))
           << QStringList{QStringLiteral("default"), tr("Show request")}
           << QVariantMap{{"desktop-entry",
                           QStringLiteral("org.yubiquity.Desktop")},
@@ -117,5 +120,5 @@ void ApprovalNotification::notificationClosed(uint id, uint,
   if (!notificationId || id != notificationId || message.service() != owner)
     return;
   notificationId = 0; // Already closed; do not send CloseNotification back.
-  clear(); // Closing a notification never decides an approval.
+  clear();            // Closing a notification never decides an approval.
 }

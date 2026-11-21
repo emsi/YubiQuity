@@ -25,12 +25,29 @@ pub const WATCH_VERSION: u32 = 1;
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Status {},
-    Unlock { passphrase: Vec<u8> },
-    ConfigurePin { current: Vec<u8>, new: Vec<u8> },
-    Approve { token: String },
-    Deny { token: String },
+    Unlock {
+        passphrase: Vec<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
+    },
+    ConfigurePin {
+        current: Vec<u8>,
+        new: Vec<u8>,
+    },
+    Approve {
+        token: String,
+    },
+    Deny {
+        token: String,
+    },
     Lock {},
-    Watch { version: u32 },
+    /// Desktop session availability; disabling also locks and cancels work.
+    Session {
+        active: bool,
+    },
+    Watch {
+        version: u32,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -56,6 +73,10 @@ pub struct Response {
     pub pending: Option<Pending>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin_configured: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unlock_request: Option<Pending>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_available: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -74,6 +95,8 @@ impl Response {
             error: None,
             pending: None,
             pin_configured: None,
+            unlock_request: None,
+            wake_available: None,
         }
     }
     pub fn ready(pending: Option<Pending>) -> Self {
@@ -83,6 +106,8 @@ impl Response {
             error: None,
             pending,
             pin_configured: None,
+            unlock_request: None,
+            wake_available: None,
         }
     }
     pub fn error(mut self, message: &'static str) -> Self {
@@ -410,6 +435,30 @@ impl Server {
         self.send(id, &response)
     }
 
+    /// Keep an asynchronous unlock reply alive only while its caller is still
+    /// connected. Abandoning a password check must not unlock the vault.
+    pub fn keep_unlock_client(&mut self, id: RequestId) -> bool {
+        let Some(client) = self.clients.iter_mut().find(|c| c.id == id) else {
+            return false;
+        };
+        let mut byte = 0u8;
+        // SAFETY: live socket and a writable one-byte buffer; peek is nonblocking.
+        let count = unsafe {
+            libc::recv(
+                client.stream.as_raw_fd(),
+                (&mut byte as *mut u8).cast(),
+                1,
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
+        };
+        if count < 0 && io::Error::last_os_error().kind() == io::ErrorKind::WouldBlock {
+            client.accepted = Instant::now();
+            true
+        } else {
+            false
+        }
+    }
+
     fn send(&mut self, id: RequestId, response: &impl Serialize) -> Result<()> {
         if let Some(client) = self.clients.iter_mut().find(|client| client.id == id) {
             let bytes = serde_json::to_vec(response)?;
@@ -472,6 +521,9 @@ impl Server {
         };
         let mut key = state.clone();
         if let Some(pending) = &mut key.pending {
+            pending.remaining_ms = 0;
+        }
+        if let Some(pending) = &mut key.unlock_request {
             pending.remaining_ms = 0;
         }
         let key = serde_json::to_vec(&key)?;

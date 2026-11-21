@@ -87,10 +87,11 @@ class RunningService:
 
 
 @contextlib.contextmanager
-def service(vault, socket_path):
+def service(vault, socket_path, *, unlock_on_request=False):
     with device_test_lock():
+        mode = ["--unlock-on-request"] if unlock_on_request else []
         process = subprocess.Popen([str(BINARY), "serve", "--vault", str(vault), "--socket", str(socket_path),
-                                    *node_arguments()], stdin=subprocess.DEVNULL,
+                                    *node_arguments(), *mode], stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         running = RunningService(process, socket_path)
         try:
@@ -133,6 +134,26 @@ class ControlTests(unittest.TestCase):
         self.vault = Path(self.directory.name) / "vault.yq"
         self.socket = Path(self.directory.name) / "control.sock"
         cli("init", self.vault)
+
+    def test_desktop_mode_keeps_hid_and_binds_unlock_to_live_request(self):
+        with service(self.vault, self.socket, unlock_on_request=True) as running, deadline(45):
+            path = running.unlock()
+            self.assertTrue(ctl(self.socket, "lock")["wake_available"])
+            with open_device(path) as device:
+                ctap = Ctap2(device)
+                self.assertIn("FIDO_2_0", ctap.get_info().versions)
+                self.assertNotIn("unlock_request", ctl(self.socket, "status"))
+                task = Task(lambda: register(ctap, resident=True))
+                end = time.monotonic() + 5
+                while not (wake := ctl(self.socket, "status").get("unlock_request")):
+                    self.assertLess(time.monotonic(), end)
+                    time.sleep(.02)
+                self.assertFalse(ctl(self.socket, "unlock", "--request-token", "stale", check=False)["ok"])
+                self.assertEqual(ctl(self.socket, "unlock", "--request-token", wake["token"])["state"], "ready")
+                approval = running.pending()
+                self.assertTrue(task.thread.is_alive(), "unlock must not approve registration")
+                ctl(self.socket, "deny", approval["token"])
+                self.error(CtapError.ERR.OPERATION_DENIED, task.finish)
 
     def test_desktop_pin_setup_persists_and_is_busy_during_browser_approval(self):
         with service(self.vault, self.socket) as running:

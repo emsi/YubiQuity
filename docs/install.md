@@ -101,7 +101,13 @@ the request. The vault passphrase is only for unlocking YubiQuity; the browser
 uses the separate security-key PIN.
 
 Click the tray icon to open the main window or recall a pending approval.
-**Lock** detaches the key until you unlock again. **Lock and quit** also exits
+After the first manual unlock, **Lock** clears vault secrets while keeping the
+device available. A browser security-key request opens an unlock prompt, then
+continues through the normal PIN and approval steps. Cancelling or expiry ends
+that request. Screen lock and sleep also clear secrets and suppress prompts;
+returning to the desktop restores availability without unlocking the vault.
+Restarting the app, or changing the vault externally, requires manual unlock.
+**Lock and quit** disconnects the device and exits
 the application. Closing the main window keeps it running when a tray is
 available; without a tray, closing locks and exits.
 
