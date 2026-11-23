@@ -9,9 +9,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QLineEdit>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QSignalSpy>
+#include <QTableView>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QWindow>
@@ -58,6 +60,12 @@ public:
   std::optional<bool> wakeAvailable;
   QJsonObject unlockPending;
   std::optional<bool> pinConfigured;
+  QString credentialsRevision;
+  QJsonArray stored;
+  bool holdListing = false;
+  QPointer<QLocalSocket> listingClient;
+  QJsonObject listingRequest;
+  QJsonObject listingOverride;
   FakeService() {
     chmod(QFile::encodeName(dir.path()).constData(), 0700);
     listener.setSocketOptions(QLocalServer::UserAccessOption);
@@ -81,6 +89,14 @@ public:
           publish();
         } else {
           commands.append(command);
+          if (command.value("command") == "credentials") {
+            listingRequest = command;
+            if (holdListing)
+              listingClient = socket;
+            else
+              sendCredentials(socket, command);
+            return;
+          }
           if (command.value("command") == "unlock") {
             locked = false;
             unlockPending = {};
@@ -104,8 +120,10 @@ public:
             pinConfigured = true;
             publish();
           }
-          if (command.value("command") == "lock")
+          if (command.value("command") == "lock") {
             locked = true;
+            publish();
+          }
           send(socket, {{"ok", true}, {"state", locked ? "locked" : "ready"}});
           socket->disconnectFromServer();
         }
@@ -115,6 +133,34 @@ public:
     });
   }
   QString path() const { return dir.path() + "/control.sock"; }
+  void sendCredentials(QLocalSocket *socket, const QJsonObject &command) {
+    if (!socket)
+      return;
+    QJsonObject response{{"ok", true},
+                         {"state", "ready"},
+                         {"credentials_revision", credentialsRevision}};
+    if (!listingOverride.isEmpty())
+      response = listingOverride;
+    else if (locked ||
+             command.value("revision").toString() != credentialsRevision)
+      response = {{"ok", false},
+                  {"state", locked ? "locked" : "ready"},
+                  {"error", "The passkey list changed. Refresh to try again."}};
+    else {
+      auto offset = command.value("offset").toInt();
+      QJsonArray rows;
+      for (int i = offset; i < qMin(offset + 2, int(stored.size())); ++i)
+        rows.append(stored[i]);
+      int end = offset + int(rows.size());
+      response["credentials"] = QJsonObject{
+          {"items", rows},
+          {"total", stored.size()},
+          {"next_offset", end < stored.size() ? QJsonValue(end)
+                                              : QJsonValue(QJsonValue::Null)}};
+    }
+    send(socket, response);
+    socket->disconnectFromServer();
+  }
   static void send(QLocalSocket *socket, const QJsonObject &object) {
     auto bytes = QJsonDocument(object).toJson(QJsonDocument::Compact);
     char size[4];
@@ -133,6 +179,8 @@ public:
     if (locked)
       data["snapshot"] = QJsonObject{{"ok", true}, {"state", "locked"}};
     auto state = data["snapshot"].toObject();
+    if (!locked && !credentialsRevision.isEmpty())
+      state["credentials_revision"] = credentialsRevision;
     if (wakeAvailable)
       state["wake_available"] = *wakeAvailable;
     if (!unlockPending.isEmpty())
@@ -142,6 +190,19 @@ public:
       send(watcher, data);
   }
 };
+
+static QJsonObject storedPasskey(char id, QString site, QString username = {},
+                                 QString name = {}) {
+  return {{"credential_id", QString(64, QChar(id))},
+          {"rp_id", site},
+          {"name", username.isEmpty() ? QJsonValue(QJsonValue::Null)
+                                      : QJsonValue(username)},
+          {"display_name",
+           name.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(name)},
+          {"user_handle", "012345"},
+          {"discoverable", true},
+          {"algorithm", -7}};
+}
 
 // Disposable Assuan prompt. It waits for the test to supply an answer, so
 // cancellation and late secret delivery are exercised without a host desktop.
@@ -188,6 +249,156 @@ public:
 class DesktopTests : public QObject {
   Q_OBJECT
 private slots:
+  void passkeysUnlockAndRefreshAfterVaultChanges() {
+    SecretPromptFixture secret;
+    FakeService server;
+    server.locked = true;
+    server.request = {};
+    server.wakeAvailable = true;
+    server.credentialsRevision = "catalog-1";
+    server.stored = {storedPasskey('a', "old.example", "alice")};
+    Window window(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"), {},
+                  server.path(), {});
+    window.show();
+    QTRY_VERIFY(server.watcher);
+    window.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(2);
+    auto *table = window.findChild<QTableView *>("passkeysTable");
+    QCOMPARE(table->model()->rowCount(), 0);
+    window.findChild<QPushButton *>("passkeysUnlock")->click();
+    secret.answer();
+    QTRY_COMPARE(table->model()->rowCount(), 1);
+    QVERIFY(window.isVisible());
+    QCOMPARE(table->model()->index(0, 0).data().toString(),
+             QString("old.example"));
+    // A replacement with the same count must refresh too.
+    server.credentialsRevision = "catalog-2";
+    server.stored = {storedPasskey('b', "new.example", "bob")};
+    server.publish();
+    QTRY_COMPARE(table->model()->index(0, 0).data().toString(),
+                 QString("new.example"));
+    QCOMPARE(table->model()->rowCount(), 1);
+  }
+
+  void passkeysDisplaySearchAndDistinguishSameSiteAndAccount() {
+    FakeService server;
+    server.credentialsRevision = "catalog-1";
+    server.stored = {
+        storedPasskey('a', "example.test", "alice", "<b>Alice</b>\u202e"),
+        storedPasskey('b', "example.test", "alice", "Alice"),
+        storedPasskey('c', "another.test")};
+    CredentialsPage page(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"));
+    page.setContext(server.path(), true, server.credentialsRevision);
+    page.show();
+    auto *table = page.findChild<QTableView *>("passkeysTable");
+    auto *search = page.findChild<QLineEdit *>("passkeysSearch");
+    auto *details = page.findChild<QLabel *>("passkeyDetails");
+    QTRY_COMPARE(table->model()->rowCount(), 3);
+    QCOMPARE(table->model()->index(0, 0).data().toString(),
+             QString("another.test"));
+    search->setText("ALICE");
+    QCOMPARE(table->model()->rowCount(), 2);
+    search->setText(QString(64, 'a'));
+    QCOMPARE(table->model()->rowCount(), 1);
+    table->selectRow(0);
+    QVERIFY(details->text().contains(QString(64, 'a')));
+    QVERIFY(details->text().contains("<b>Alice</b>\\u202e"));
+    QCOMPARE(details->textFormat(), Qt::PlainText);
+    search->setText("another");
+    QCOMPARE(table->model()->index(0, 1).data().toString(),
+             QString("Not provided"));
+    search->setText("absent");
+    QCOMPARE(table->model()->rowCount(), 0);
+    QVERIFY(details->text().isEmpty());
+    page.setContext(server.path(), false, {});
+    QVERIFY(search->text().isEmpty());
+    QCOMPARE(table->model()->rowCount(), 0);
+  }
+
+  void passkeysClearOnLockAndIgnoreLateListingReply() {
+    FakeService server;
+    server.credentialsRevision = "catalog-1";
+    server.stored = {storedPasskey('a', "old.example", "alice")};
+    server.holdListing = true;
+    CredentialsPage page(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"));
+    page.setContext(server.path(), true, server.credentialsRevision);
+    page.show();
+    auto *table = page.findChild<QTableView *>("passkeysTable");
+    QTRY_VERIFY(server.listingClient);
+    page.setContext(server.path(), false, {});
+    server.sendCredentials(server.listingClient, server.listingRequest);
+    QTest::qWait(50);
+    QCOMPARE(table->model()->rowCount(), 0);
+    QVERIFY(page.findChild<QLabel *>("passkeyDetails")->text().isEmpty());
+    server.holdListing = false;
+    server.credentialsRevision = "catalog-2";
+    server.stored = {storedPasskey('b', "new.example", "bob")};
+    page.setContext(server.path(), true, server.credentialsRevision);
+    QTRY_COMPARE(table->model()->rowCount(), 1);
+    QCOMPARE(table->model()->index(0, 0).data().toString(),
+             QString("new.example"));
+    page.hide();
+    QCOMPARE(table->model()->rowCount(), 0);
+  }
+
+  void passkeysRejectMalformedAndChangedPages() {
+    FakeService server;
+    server.credentialsRevision = "catalog-1";
+    server.listingOverride = {
+        {"ok", true},
+        {"state", "ready"},
+        {"credentials_revision", "catalog-1"},
+        {"credentials",
+         QJsonObject{{"items", QJsonArray{storedPasskey('a', "example.test")}},
+                     {"total", 2},
+                     {"next_offset", 0}}}};
+    CredentialsPage page(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"));
+    page.setContext(server.path(), true, server.credentialsRevision);
+    page.show();
+    auto *table = page.findChild<QTableView *>("passkeysTable");
+    auto *status = page.findChild<QLabel *>("passkeysStatus");
+    QTRY_VERIFY(status->text().contains("Invalid"));
+    QCOMPARE(table->model()->rowCount(), 0);
+    server.listingOverride["credentials_revision"] = "catalog-old";
+    page.findChild<QPushButton *>("passkeysRefresh")->click();
+    QTRY_VERIFY(status->text().contains("Invalid"));
+    QCOMPARE(table->model()->rowCount(), 0);
+    server.listingOverride = {};
+    page.findChild<QPushButton *>("passkeysRefresh")->click();
+    QTRY_VERIFY(status->text().contains("No passkeys"));
+  }
+
+  void passkeysClearAcrossWindowLifecycle_data() {
+    QTest::addColumn<QString>("ending");
+    for (const auto &ending : {"lock", "screen-lock", "suspend", "disconnect"})
+      QTest::newRow(ending) << QString(ending);
+  }
+  void passkeysClearAcrossWindowLifecycle() {
+    QFETCH(QString, ending);
+    FakeService server;
+    server.request = {};
+    server.wakeAvailable = true;
+    server.credentialsRevision = "catalog-1";
+    server.stored = {storedPasskey('a', "example.test", "alice")};
+    Window window(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"), {},
+                  server.path(), {});
+    window.show();
+    QTRY_VERIFY(server.watcher);
+    auto *tabs = window.findChild<QTabWidget *>("mainTabs");
+    tabs->setCurrentIndex(2);
+    auto *table = window.findChild<QTableView *>("passkeysTable");
+    QTRY_COMPARE(table->model()->rowCount(), 1);
+    if (ending == "lock")
+      window.findChild<QPushButton *>("lock")->click();
+    else if (ending == "screen-lock")
+      window.screenLocked(true);
+    else if (ending == "suspend")
+      window.sleepChanged(true);
+    else
+      server.watcher->disconnectFromServer();
+    QTRY_COMPARE(table->model()->rowCount(), 0);
+    QVERIFY(window.findChild<QLabel *>("passkeyDetails")->text().isEmpty());
+  }
+
   void browserUnlockPromptsAndResumesWithoutApproving() {
     SecretPromptFixture secret;
     FakeService server;

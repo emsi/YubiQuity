@@ -67,6 +67,10 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
   tabs->addTab(body, tr("Vault"));
   setup = new SetupPage(backend, helper);
   tabs->addTab(setup, tr("Setup"));
+  passkeys = new CredentialsPage(backend);
+  tabs->addTab(passkeys, tr("Passkeys"));
+  connect(passkeys, &CredentialsPage::unlockRequested, unlock,
+          &QPushButton::click);
   setCentralWidget(tabs);
   connect(setup, &SetupPage::createVault, this, [this] { selectVault(true); });
   connect(setup, &SetupPage::openVault, this, [this] { selectVault(false); });
@@ -88,6 +92,8 @@ Window::Window(QString executable, QString vaultPath, QString socketPath,
     if (index == 1) {
       resize(qMax(width(), 700), qMax(height(), 650));
       setup->check();
+    } else if (index == 2) {
+      resize(qMax(width(), 850), qMax(height(), 550));
     }
   });
   // External-service mode is used by explicit integrations/test harnesses;
@@ -248,6 +254,10 @@ void Window::setBusy(bool value) {
 }
 
 void Window::updateButtons() {
+  passkeys->setContext(socket,
+                       model.state == "ready" && !sessionLocked && !sleeping &&
+                           !stopping && !busy,
+                       model.credentialsRevision);
   unlock->setEnabled(!busy && !sessionLocked && !sleeping &&
                      model.state != "ready" &&
                      (!vault.isEmpty() || !externalSocket.isEmpty()));
@@ -317,6 +327,7 @@ void Window::stopService() {
   if (stopping)
     return;
   stopping = true;
+  passkeys->setContext({}, false, {});
   if (sessionCommand) {
     sessionCommand->disconnect(this);
     sessionCommand->cancel();

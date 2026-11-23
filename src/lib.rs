@@ -2,6 +2,7 @@
 pub mod authenticator;
 pub mod cbor;
 pub mod control;
+pub mod credentials;
 pub mod crypto;
 pub mod ctap;
 mod device_access;

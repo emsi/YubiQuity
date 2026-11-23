@@ -165,6 +165,15 @@ an interactive security-key request opens a request-bound unlock prompt, followe
 by the normal PIN and approval steps. Discovery queries stay silent. No secret
 is cached for reopening the vault; restart or changed vault metadata requires a
 new manual unlock.
+
+The **Passkeys** tab lists stored sites, usernames and display names while the
+vault is unlocked. Search and sort the list, then select a row to see its full
+passkey ID and account identifier. Missing names are shown as **Not provided**;
+these names come from the site. The list includes both discoverable and
+non-discoverable credentials, refreshes when the vault changes, and clears on
+lock or when hidden. It reads metadata through the running service without
+exporting signing keys or changing the vault format.
+
 After finishing onboarding, the main window hides to the
 tray automatically when ready. Setup remains visible while you work through it. Open/create another vault from the main window. **Hide to
 tray** and closing the main window keep the app running when a tray is available;
@@ -398,6 +407,12 @@ operation. `control session --active false` also suppresses interactive requests
 `--active true` restores availability without unlocking. These commands use the
 same private, same-user control socket. The ordinary CLI service retains its
 detach-on-lock behavior.
+
+`control credentials` explicitly reads one bounded page of passkey metadata,
+including account names. The vault must be unlocked. Continue with `--offset`
+and `--revision` from the previous response; a changed vault or a new unlock
+invalidates an old revision. Status/watch messages expose only the revision,
+not the list of sites or accounts. Update the CLI/backend and desktop together.
 
 Service clients are one-shot commands. **Disconnecting a client does not lock the
 service**: explicitly lock it or stop the service when finished. No client/no

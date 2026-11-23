@@ -1,4 +1,5 @@
 #pragma once
+#include "credentials.h"
 #include "notifications.h"
 #include "process.h"
 #include "setup.h"
@@ -52,6 +53,7 @@ private:
   ApprovalNotification *notification;
   QTabWidget *tabs;
   SetupPage *setup;
+  CredentialsPage *passkeys;
   void startService(bool askUnlock = false);
   void startWatch();
   void stopService();
