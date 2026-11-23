@@ -10,7 +10,7 @@ class ApprovalNotification : public QObject {
 public:
   explicit ApprovalNotification(QObject *parent = nullptr);
   ~ApprovalNotification() override;
-  void show(const QString &request);
+  void show(const QString &request, bool unlock = false);
   void clear();
 signals:
   // The controller must still check that this exact request is live.
@@ -26,6 +26,7 @@ private:
   QString request, owner;
   uint notificationId = 0;
   quint64 generation = 0;
+  bool unlocking = false;
   void close(const QString &serviceOwner, uint id);
   void send(const QString &serviceOwner, quint64 sequence);
 };

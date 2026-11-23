@@ -35,6 +35,34 @@ pub fn transport_probe(request: &[u8]) -> Vec<u8> {
     }
 }
 
+pub(crate) fn authenticator_info(pin_configured: bool) -> Value {
+    map([
+        (int(1), Value::Array(vec![text("FIDO_2_0")])),
+        (int(2), Value::Array(vec![])),
+        (int(3), cbor::bytes(&AAGUID)),
+        (
+            int(4),
+            map([
+                (text("rk"), Value::Bool(true)),
+                (text("up"), Value::Bool(true)),
+                (text("plat"), Value::Bool(false)),
+                (text("clientPin"), Value::Bool(pin_configured)),
+            ]),
+        ),
+        (int(5), int(crate::hid::MAX_MESSAGE as i64)),
+        (int(6), Value::Array(vec![int(1)])),
+        (int(7), int(64)), // maximum credential descriptors per request
+        (int(8), int(32)), // credential ID length
+        (
+            int(10),
+            Value::Array(vec![map([
+                (text("type"), text("public-key")),
+                (text("alg"), int(-7)),
+            ])]),
+        ),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

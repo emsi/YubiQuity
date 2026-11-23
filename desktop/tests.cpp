@@ -1,9 +1,9 @@
 #include "notification_fixture.h"
 #include "presentation.h"
-#include <QDBusPendingCallWatcher>
 #include "process.h"
 #include "ui.h"
 #include "window.h"
+#include <QDBusPendingCallWatcher>
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QJsonArray>
@@ -55,6 +55,8 @@ public:
   int sequence = 0;
   QJsonObject request = pending();
   bool locked = false;
+  std::optional<bool> wakeAvailable;
+  QJsonObject unlockPending;
   std::optional<bool> pinConfigured;
   FakeService() {
     chmod(QFile::encodeName(dir.path()).constData(), 0700);
@@ -79,6 +81,25 @@ public:
           publish();
         } else {
           commands.append(command);
+          if (command.value("command") == "unlock") {
+            locked = false;
+            unlockPending = {};
+            publish();
+          }
+          if (command.value("command") == "deny" &&
+              command.value("token") == unlockPending.value("token")) {
+            unlockPending = {};
+            publish();
+          }
+          if (command.value("command") == "session") {
+            wakeAvailable = command.value("active").toBool();
+            if (!*wakeAvailable) {
+              locked = true;
+              request = {};
+              unlockPending = {};
+            }
+            publish();
+          }
           if (command.value("command") == "configure_pin") {
             pinConfigured = true;
             publish();
@@ -111,14 +132,172 @@ public:
     }
     if (locked)
       data["snapshot"] = QJsonObject{{"ok", true}, {"state", "locked"}};
+    auto state = data["snapshot"].toObject();
+    if (wakeAvailable)
+      state["wake_available"] = *wakeAvailable;
+    if (!unlockPending.isEmpty())
+      state["unlock_request"] = unlockPending;
+    data["snapshot"] = state;
     if (watcher)
       send(watcher, data);
+  }
+};
+
+// Disposable Assuan prompt. It waits for the test to supply an answer, so
+// cancellation and late secret delivery are exercised without a host desktop.
+class SecretPromptFixture {
+  QTemporaryDir dir;
+  QByteArray path = qgetenv("PATH"), display = qgetenv("DISPLAY");
+
+public:
+  SecretPromptFixture() {
+    QFile script(dir.path() + "/pinentry-qt");
+    if (!script.open(QIODevice::WriteOnly))
+      qFatal("cannot create secret fixture");
+    script.write(QString("#!/usr/bin/python3\nimport sys, time, pathlib\n"
+                         "print('OK', flush=True)\n"
+                         "for line in sys.stdin:\n"
+                         " if line.strip() == 'BYE': break\n"
+                         " if line.strip() == 'GETPIN':\n"
+                         "  p = pathlib.Path('%1')\n"
+                         "  while not p.exists(): time.sleep(.01)\n"
+                         "  print(p.read_text(), end='', flush=True)\n"
+                         " else: print('OK', flush=True)\n")
+                     .arg(answerPath())
+                     .toUtf8());
+    script.close();
+    QFile::setPermissions(script.fileName(), QFile::ReadOwner |
+                                                 QFile::WriteOwner |
+                                                 QFile::ExeOwner);
+    qputenv("PATH", QFile::encodeName(dir.path()) + ":" + path);
+    qputenv("DISPLAY", ":yubiquity-test");
+  }
+  QString answerPath() const { return dir.path() + "/answer"; }
+  void answer() {
+    QFile file(answerPath());
+    if (!file.open(QIODevice::WriteOnly))
+      qFatal("cannot answer secret fixture");
+    file.write("D disposable-test-passphrase\nOK\n");
+  }
+  ~SecretPromptFixture() {
+    qputenv("PATH", path);
+    qputenv("DISPLAY", display);
   }
 };
 
 class DesktopTests : public QObject {
   Q_OBJECT
 private slots:
+  void browserUnlockPromptsAndResumesWithoutApproving() {
+    SecretPromptFixture secret;
+    FakeService server;
+    server.locked = true;
+    server.wakeAvailable = true;
+    server.request = {};
+    Window window(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"), {},
+                  server.path(), {});
+    QTRY_VERIFY(server.watcher);
+    window.hide();
+    server.unlockPending = pending("wake-123");
+    server.unlockPending["operation"] = "unlock";
+    server.publish();
+    QTRY_VERIFY(visibleApproval());
+    QCOMPARE(visibleApproval()->objectName(), QString("unlockRequestDialog"));
+    QVERIFY(!window.isVisible());
+    secret.answer();
+    QTRY_VERIFY(!server.locked);
+    QTRY_VERIFY(!visibleApproval());
+    bool unlocked = false;
+    for (const auto &command : server.commands) {
+      QVERIFY(command["command"] != "approve");
+      if (command["command"] == "unlock") {
+        QCOMPARE(command["token"].toString(), QString("wake-123"));
+        unlocked = true;
+      }
+    }
+    QVERIFY(unlocked);
+    server.request = pending("approval-456");
+    server.publish();
+    QTRY_VERIFY(visibleApproval());
+    QCOMPARE(visibleApproval()->token(), QString("approval-456"));
+  }
+  void browserUnlockCancellation_data() {
+    QTest::addColumn<QString>("ending");
+    for (const auto &ending :
+         {"browser", "expired", "screen-lock", "suspend", "user"})
+      QTest::newRow(ending) << QString(ending);
+  }
+  void browserUnlockCancellation() {
+    QFETCH(QString, ending);
+    SecretPromptFixture secret;
+    FakeService server;
+    server.locked = true;
+    server.wakeAvailable = true;
+    server.request = {};
+    Window window(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"), {},
+                  server.path(), {});
+    QTRY_VERIFY(server.watcher);
+    window.hide();
+    server.unlockPending =
+        pending("wake-cancel", ending == "expired" ? 250 : 30000);
+    server.unlockPending["operation"] = "unlock";
+    server.publish();
+    QTRY_VERIFY(visibleApproval());
+    QTest::qWait(30);
+    if (ending == "browser") {
+      server.unlockPending = {};
+      server.publish();
+    } else if (ending == "screen-lock")
+      window.screenLocked(true);
+    else if (ending == "suspend")
+      window.sleepChanged(true);
+    else if (ending == "user")
+      visibleApproval()->close();
+    QTRY_VERIFY(!visibleApproval());
+    secret.answer();
+    QTest::qWait(100);
+    for (const auto &command : server.commands) {
+      QVERIFY(command["command"] != "unlock");
+      QVERIFY(command["command"] != "approve");
+    }
+    QVERIFY(server.locked);
+    QVERIFY(!window.isVisible());
+    if (ending == "screen-lock" || ending == "suspend") {
+      QTRY_COMPARE(server.wakeAvailable, std::optional<bool>(false));
+      if (ending == "screen-lock")
+        window.screenLocked(false);
+      else
+        window.sleepChanged(false);
+      QTRY_COMPARE(server.wakeAvailable, std::optional<bool>(true));
+      QVERIFY(server.locked);
+      QVERIFY(!visibleApproval());
+    }
+  }
+  void unlockSnapshotValidationAndDeadline() {
+    SnapshotModel model;
+    QString error;
+    auto event = snapshotEvent(1);
+    auto state = event["snapshot"].toObject();
+    auto wake = pending("wake");
+    wake["operation"] = "unlock";
+    state["unlock_request"] = wake;
+    state["wake_available"] = true;
+    event["snapshot"] = state;
+    QVERIFY(!model.update(event, error)); // ready state cannot request unlock
+    state["state"] = "locked";
+    event["sequence"] = 2;
+    event["snapshot"] = state;
+    QVERIFY(model.update(event, error));
+    QCOMPARE(model.unlockRequest.token, QString("wake"));
+    Pending request = model.unlockRequest;
+    request.remaining = 150;
+    ApprovalDialog dialog(request);
+    QSignalSpy expired(&dialog, &ApprovalDialog::expired);
+    dialog.show();
+    QTest::qWait(75);
+    dialog.shortenLifetime(30000);
+    QTRY_COMPARE_WITH_TIMEOUT(expired.size(), 1, 300);
+  }
   void init() {
     if (QByteArray(QTest::currentTestFunction()).startsWith("notification") &&
         !qEnvironmentVariableIsSet("YUBIQUITY_PRIVATE_TEST_BUS"))
@@ -131,7 +310,8 @@ private slots:
     QSignalSpy actions(&notification, &ApprovalNotification::activated);
     notification.show("PRIVATE-A");
     QTRY_COMPARE(server.requests.size(), 1);
-    QTRY_VERIFY(notification.findChildren<QDBusPendingCallWatcher *>().isEmpty());
+    QTRY_VERIFY(
+        notification.findChildren<QDBusPendingCallWatcher *>().isEmpty());
     const auto first = server.lastId;
     QCOMPARE(server.requests[0][1].toUInt(), uint(0));
     for (const auto &argument : server.requests[0])
@@ -146,7 +326,8 @@ private slots:
     QCOMPARE(actions[0][0].toString(), QString("PRIVATE-A"));
     notification.show("PRIVATE-B");
     QTRY_COMPARE(server.requests.size(), 2);
-    QTRY_VERIFY(notification.findChildren<QDBusPendingCallWatcher *>().isEmpty());
+    QTRY_VERIFY(
+        notification.findChildren<QDBusPendingCallWatcher *>().isEmpty());
     const auto second = server.lastId;
     QVERIFY(second != first);
     QCOMPARE(server.requests[1][1].toUInt(), uint(0));
@@ -162,6 +343,35 @@ private slots:
     server.action(second);
     QTest::qWait(50);
     QCOMPARE(actions.size(), 2);
+  }
+  void notificationUnlockCannotRestoreAfterCancellation() {
+    SecretPromptFixture secret;
+    NotificationServer notifications;
+    FakeService server;
+    server.locked = true;
+    server.wakeAvailable = true;
+    server.request = {};
+    Window window(qEnvironmentVariable("YUBIQUITY_TEST_BACKEND"), {},
+                  server.path(), {});
+    QTRY_VERIFY(server.watcher);
+    window.hide();
+    server.unlockPending = pending("wake-notification");
+    server.unlockPending["operation"] = "unlock";
+    server.publish();
+    QTRY_VERIFY(visibleApproval());
+    QTRY_COMPARE(notifications.requests.size(), 1);
+    const auto id = notifications.lastId;
+    server.unlockPending = {};
+    server.publish();
+    QTRY_VERIFY(!visibleApproval());
+    QTRY_VERIFY(notifications.closed.contains(id));
+    notifications.action(id);
+    secret.answer();
+    QTest::qWait(100);
+    QVERIFY(!visibleApproval());
+    QVERIFY(!window.isVisible());
+    for (const auto &command : server.commands)
+      QVERIFY(command["command"] != "unlock");
   }
   void notificationLateRepliesCannotReviveRequests() {
     NotificationServer server;
@@ -365,7 +575,8 @@ private slots:
     window.hide();
     auto *notification = window.findChild<ApprovalNotification *>();
     QTRY_VERIFY_WITH_TIMEOUT(
-        notification->findChildren<QDBusPendingCallWatcher *>().isEmpty(), 4000);
+        notification->findChildren<QDBusPendingCallWatcher *>().isEmpty(),
+        4000);
     QVERIFY(dialog && dialog->isLive() && dialog->isVisible());
     QVERIFY(!window.isVisible());
     dialog->findChild<QPushButton *>("approve")->click();
@@ -398,7 +609,8 @@ private slots:
                           {"status", "ok"},
                           {"detail", "UHID is accessible."}},
               QJsonObject{
-                  {"id", "hidraw"}, {"title", "Browser-facing device"},
+                  {"id", "hidraw"},
+                  {"title", "Browser-facing device"},
                   {"status", "ok"},
                   {"detail", "A temporary device was opened and detached."}},
               QJsonObject{{"title", "Firefox Snap connection"},
@@ -518,11 +730,13 @@ private slots:
     QVERIFY(page.findChild<QPushButton *>("setupFirefox")->isHidden());
     // One actionable summary; raw process details stay behind a disclosure.
     page.showReport(
-        {{"version", 1}, {"repair_device", true},
+        {{"version", 1},
+         {"repair_device", true},
          {"checks", QJsonArray{QJsonObject{
-             {"id", "uhid"}, {"title", "Security-key access"},
-             {"status", "attention"},
-             {"detail", "cannot open /dev/uhid\nGroups:\t1000"}}}}});
+                        {"id", "uhid"},
+                        {"title", "Security-key access"},
+                        {"status", "attention"},
+                        {"detail", "cannot open /dev/uhid\nGroups:\t1000"}}}}});
     QVERIFY(!page.findChild<QPushButton *>("setupDevice")->isHidden());
     auto summary = page.findChild<QLabel *>("setupChecks")->text();
     QVERIFY(summary.contains("No logout or reboot"));
@@ -534,9 +748,10 @@ private slots:
     page.findChild<QPushButton *>("setupShowDetails")->click();
     QVERIFY(!checks->isHidden());
     page.showReport(
-        {{"version", 1}, {"checks", QJsonArray{
-             QJsonObject{{"id", "uhid"}, {"status", "ok"}},
-             QJsonObject{{"id", "hidraw"}, {"status", "ok"}}}}});
+        {{"version", 1},
+         {"checks",
+          QJsonArray{QJsonObject{{"id", "uhid"}, {"status", "ok"}},
+                     QJsonObject{{"id", "hidraw"}, {"status", "ok"}}}}});
     QCOMPARE(page.findChild<QLabel *>("setupChecks")->text(),
              QString("Access is ready. Continue with your vault below."));
     QVERIFY(page.findChild<QPushButton *>("setupDevice")->isHidden());

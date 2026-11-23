@@ -478,6 +478,31 @@ can replace Terminal A with explicit `control` commands. The supplied unit uses
 `host-test/credentials.yq`; select the intended vault before switching. A new
 vault will not contain these test credentials.
 
+## Desktop unlock-on-request regression checks
+
+After the first manual unlock, hide the app and lock/unlock the desktop. In both
+Firefox and Chromium, register a disposable passkey and sign in using an existing
+passkey, with and without a username. Each attempt must request vault unlock when
+needed, then perform the normal PIN and explicit approval steps. Cancelling the
+browser or vault prompt, allowing it to expire, or locking/suspending the desktop
+must cancel the request. Resuming must leave the vault locked without reopening
+the old prompt. Clicking an old notification must do nothing. Routine device
+enumeration must not open a prompt.
+
+With the real UHID/browser test prerequisites installed, automated protocol
+acceptance is available through:
+
+```bash
+python3 tests/browser/wake.py --browser firefox
+python3 tests/browser/wake.py --browser chrome
+```
+
+These use disposable vaults/profiles and explicit test-client decisions. They
+exercise actual browsers and HID, while Qt tests separately cover prompt and
+notification lifetimes. They do not establish host suspend or Plasma panel
+behavior; perform those checks on the installation being tested. A browser that
+has already abandoned an operation may require retrying it after unlock.
+
 ## If something fails
 
 | Symptom | Check |
@@ -485,7 +510,7 @@ vault will not contain these test credentials.
 | `/dev/uhid` is missing | Run `sudo modprobe uhid`; if it fails, check host kernel UHID/HIDRAW support. |
 | An older version requests a group refresh or reboot | Upgrade to 0.2.2 or later and choose **Setup → Enable access**. The account ACL takes effect in the current session. |
 | Permission denied opening UHID or hidraw | Choose **Setup → Enable access**, then check actual access and ACLs as shown above. Inspect **Show details** for local rule overrides. |
-| No YubiQuity device while locked | Expected. It exists only while the unlocked daemon is attached. |
+| No YubiQuity device while locked | Expected before the first manual unlock and with the default CLI service. The desktop keeps it available after subsequent locks; changed vault metadata requires another manual unlock. |
 | CLI sees the device, browser does not | Verify the security-key route. For Snap Firefox, check both the interface connection and device tag using the [Snap requirements](#ubuntu-firefox-installed-as-a-snap). Do not disable its sandbox. |
 | Snap Firefox waits for a touch but Terminal A prints no `APPROVAL` | A successful `fido2-token -S` does not establish Snap access. Check for `snap_firefox_firefox` in `CURRENT_TAGS`, apply the scoped rule if missing, then fully quit/reopen Firefox. If the tag is already present and restarting does not help, collect the package/version and error; do not assume permissions are the only possible cause. |
 | `No pending request matches that approval token` | Enter `approve` followed by the actual complete token printed after `APPROVAL`, not the word `TOKEN`. If the request expired or was cancelled, retry on the site and use the new token. |

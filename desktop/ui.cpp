@@ -63,8 +63,25 @@ bool SnapshotModel::update(const QJsonObject &event, QString &error) {
       return false;
     }
   }
+  Pending nextUnlock;
+  if (snapshot.contains("unlock_request")) {
+    const auto p = snapshot.value("unlock_request").toObject();
+    nextUnlock = {p.value("token").toString(),          "unlock", {}, {}, false,
+                  p.value("remaining_ms").toInteger(-1)};
+    if (nextState != "locked" || !next.token.isEmpty() ||
+        !snapshot.value("wake_available").toBool() ||
+        p.value("operation") != "unlock" || nextUnlock.token.isEmpty() ||
+        nextUnlock.token.size() > 128 || nextUnlock.remaining <= 0 ||
+        nextUnlock.remaining > 30000) {
+      error = QStringLiteral("Invalid unlock request. Nothing was unlocked.");
+      return false;
+    }
+  }
   sequence = seq;
   state = nextState;
+  wakeSupported = snapshot.value("wake_available").isBool();
+  wakeAvailable = snapshot.value("wake_available").toBool();
+  unlockRequest = nextUnlock;
   pinKnown = snapshot.value("pin_configured").isBool() && state == "ready";
   pinConfigured = pinKnown && snapshot.value("pin_configured").toBool();
   pending = next;
@@ -83,7 +100,8 @@ ApprovalDialog::ApprovalDialog(const Pending &pending)
   setObjectName("approvalDialog");
   setWindowIcon(QIcon::fromTheme(
       "dialog-password", style()->standardIcon(QStyle::SP_ComputerIcon)));
-  setWindowTitle(request.operation == "register" ? tr("Create a passkey")
+  setWindowTitle(request.operation == "unlock"     ? tr("Unlock YubiQuity")
+                 : request.operation == "register" ? tr("Create a passkey")
                  : request.operation == "authenticate"
                      ? tr("Sign in with a passkey")
                  : request.operation == "reset" ? tr("Reset YubiQuity?")
@@ -102,7 +120,10 @@ ApprovalDialog::ApprovalDialog(const Pending &pending)
     fields->addWidget(label);
     return label;
   };
-  if (request.operation == "reset")
+  if (request.operation == "unlock")
+    field(tr("A security-key request needs your locked vault. Unlock to "
+             "continue. You will still be asked to approve the operation."));
+  else if (request.operation == "reset")
     field(tr("Delete ALL passkeys and the security-key PIN in this vault? This "
              "cannot be undone."));
   else {
@@ -117,17 +138,23 @@ ApprovalDialog::ApprovalDialog(const Pending &pending)
               ? tr("Account: %1").arg(displayText(request.account))
               : tr("Account: not provided or not yet selected"));
   }
-  field(tr("Approve only if you started this request. This confirmation "
-           "replaces touching a physical security key."));
+  field(request.operation == "unlock"
+            ? tr("Continue only if you started a security-key request.")
+            : tr("Approve only if you started this request. This confirmation "
+                 "replaces touching a physical security key."));
+  errorLabel = field({});
+  errorLabel->setObjectName("requestError");
   auto *scroll = new QScrollArea;
   scroll->setWidgetResizable(true);
   scroll->setFrameShape(QFrame::NoFrame);
   scroll->setWidget(content);
   layout->addWidget(scroll);
   auto *buttons = new QDialogButtonBox;
-  approve = buttons->addButton(
-      request.operation == "reset" ? tr("Delete all passkeys") : tr("Approve"),
-      QDialogButtonBox::AcceptRole);
+  approve = buttons->addButton(request.operation == "unlock" ? tr("Unlock…")
+                               : request.operation == "reset"
+                                   ? tr("Delete all passkeys")
+                                   : tr("Approve"),
+                               QDialogButtonBox::AcceptRole);
   approve->setObjectName("approve");
   approve->setAutoDefault(false);
   auto *cancel = buttons->addButton(QDialogButtonBox::Cancel);
@@ -165,6 +192,11 @@ void ApprovalDialog::choose(bool yes) {
     emit expired();
     return;
   }
+  if (yes && request.operation == "unlock") {
+    setWorking(true);
+    emit decision(request.token, true);
+    return;
+  }
   decided = true;
   timeout.stop();
   approve->setEnabled(false);
@@ -173,3 +205,8 @@ void ApprovalDialog::choose(bool yes) {
 }
 
 void ApprovalDialog::reject() { choose(false); }
+
+void ApprovalDialog::showError(const QString &text) {
+  errorLabel->setText(text);
+  setWorking(false);
+}

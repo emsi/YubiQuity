@@ -40,6 +40,10 @@ private:
   QString dismissedToken, displayedState;
   std::unique_ptr<QTemporaryDir> runtime;
   QPointer<ApprovalDialog> approval;
+  QPointer<ApprovalDialog> unlockRequest;
+  QString unlockToken;
+  bool sleeping = false;
+  QPointer<Command> sessionCommand;
   QPointer<Command> command;
   QPointer<Pinentry> pinentry;
   QLabel *status, *detail, *vaultLabel, *sessionNote;
@@ -56,12 +60,16 @@ private:
   void readSnapshots();
   void applySnapshot();
   void dismissApproval();
+  void applyUnlockRequest();
+  void dismissUnlockRequest();
+  void denyUnlock(const QString &token);
+  void syncSession();
   void hideInTray();
   void setBusy(bool value);
   void updateButtons();
   void selectVault(bool newVault);
-  void promptSecret(bool newVault = false);
-  void unlockWith(QByteArray secret);
+  void promptSecret(bool newVault = false, const QString &token = {});
+  void unlockWith(QByteArray secret, const QString &token = {});
   void promptPin(bool askCurrent);
   void runCommand(const QStringList &arguments, QByteArray secret,
                   bool secretInput,

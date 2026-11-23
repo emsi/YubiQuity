@@ -101,7 +101,13 @@ the request. The vault passphrase is only for unlocking YubiQuity; the browser
 uses the separate security-key PIN.
 
 Click the tray icon to open the main window or recall a pending approval.
-**Lock** detaches the key until you unlock again. **Lock and quit** also exits
+After the first manual unlock, **Lock** clears vault secrets while keeping the
+device available. A browser security-key request opens an unlock prompt, then
+continues through the normal PIN and approval steps. Cancelling or expiry ends
+that request. Screen lock and sleep also clear secrets and suppress prompts;
+returning to the desktop restores availability without unlocking the vault.
+Restarting the app, or changing the vault externally, requires manual unlock.
+**Lock and quit** disconnects the device and exits
 the application. Closing the main window keeps it running when a tray is
 available; without a tray, closing locks and exits.
 
@@ -160,14 +166,18 @@ On Ubuntu 24.04 amd64, install the development dependencies in the
 
 ```bash
 ./scripts/package-deb.py
-/usr/bin/python3 tests/release_package.py target/release-assets/v0.2.2/yubiquity_0.2.2-1_amd64.deb
-sudo apt install ./target/release-assets/v0.2.2/yubiquity_0.2.2-1_amd64.deb
+/usr/bin/python3 tests/release_package.py target/release-assets/v0.2.3-rc.1/yubiquity_0.2.3~rc.1-1_amd64.deb
+sudo apt install ./target/release-assets/v0.2.3-rc.1/yubiquity_0.2.3~rc.1-1_amd64.deb
 ```
 
 The builder compiles both components and creates the `.deb`, checksums and build
 manifest. Build from a clean committed checkout before publishing; the manifest
 records dirty builds. Installed documentation keeps the same `docs/` hierarchy
 so links between the guides work.
+
+This branch builds the `0.2.3-rc.1` test candidate. Its Debian version,
+`0.2.3~rc.1-1`, upgrades `0.2.2-1` and will be superseded by `0.2.3-1`.
+The published download links above continue to identify the stable release.
 
 For development without installing, use `./scripts/desktop.sh run`. This is the
 same GUI and backend, not a separate application. Device permissions still need

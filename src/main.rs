@@ -74,6 +74,9 @@ enum Commands {
         socket: PathBuf,
         #[arg(long)]
         node_helper: Option<PathBuf>,
+        /// Desktop mode: keep the device available across vault locks after first unlock.
+        #[arg(long)]
+        unlock_on_request: bool,
     },
     /// Same-user local service client: unlock, status, explicit approval and lock.
     Control {
@@ -136,6 +139,9 @@ enum ControlAction {
     Unlock {
         #[arg(long, value_parser = clap::value_parser!(i32).range(3..))]
         passphrase_fd: Option<i32>,
+        /// Bind this unlock to the current browser request.
+        #[arg(long)]
+        request_token: Option<String>,
     },
     /// Set/change the browser PIN through the private local service.
     ConfigurePin {
@@ -149,6 +155,11 @@ enum ControlAction {
     Deny { token: String },
     /// Cancel work, detach and clear unlocked state. Service stays locked.
     Lock,
+    /// Desktop-only availability. False cancels work and clears vault secrets.
+    Session {
+        #[arg(long, action = clap::ArgAction::Set)]
+        active: bool,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -267,10 +278,12 @@ fn main() -> Result<()> {
             vault,
             socket,
             node_helper,
+            unlock_on_request,
         } => {
             service::serve(
                 &vault,
                 &socket,
+                unlock_on_request,
                 service::Options {
                     node_helper,
                     exit_after: None,
@@ -293,7 +306,10 @@ fn main() -> Result<()> {
             let request = match action {
                 ControlAction::Watch => unreachable!(),
                 ControlAction::Status => control::Request::Status {},
-                ControlAction::Unlock { passphrase_fd } => {
+                ControlAction::Unlock {
+                    passphrase_fd,
+                    request_token,
+                } => {
                     let status = control::call(&socket, &control::Request::Status {})?;
                     if !status.ok || status.state != "locked" {
                         bail!(
@@ -304,6 +320,7 @@ fn main() -> Result<()> {
                     let passphrase = secret_input::read(passphrase_fd, false)?;
                     control::Request::Unlock {
                         passphrase: passphrase.to_vec(),
+                        token: request_token,
                     }
                 }
                 ControlAction::Approve { token } => control::Request::Approve { token },
@@ -320,6 +337,7 @@ fn main() -> Result<()> {
                 }
                 ControlAction::Deny { token } => control::Request::Deny { token },
                 ControlAction::Lock => control::Request::Lock {},
+                ControlAction::Session { active } => control::Request::Session { active },
             };
             let response = control::call(&socket, &request)?;
             drop(request);
