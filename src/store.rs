@@ -80,6 +80,7 @@ pub trait Store: Send {
 pub(crate) struct GuardedStore<S> {
     inner: S,
     failed: bool,
+    revision: u64,
 }
 
 impl<S: Store> GuardedStore<S> {
@@ -87,10 +88,14 @@ impl<S: Store> GuardedStore<S> {
         Self {
             inner,
             failed: false,
+            revision: 0,
         }
     }
     pub fn healthy(&self) -> bool {
         !self.failed
+    }
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -104,6 +109,12 @@ impl<S: Store> Store for GuardedStore<S> {
         }
         let result = self.inner.commit(next);
         self.failed = matches!(result, Err(StoreError::Failed));
+        if result.is_ok() {
+            self.revision = self
+                .revision
+                .checked_add(1)
+                .expect("store revision exhausted");
+        }
         result
     }
 }

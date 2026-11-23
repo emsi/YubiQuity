@@ -133,6 +133,14 @@ enum Commands {
 enum ControlAction {
     /// Show lock state and the current request description/token, if any.
     Status,
+    /// Read one page of stored passkey metadata from an unlocked service.
+    Credentials {
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        /// Use the revision returned by the first page for subsequent pages.
+        #[arg(long)]
+        revision: Option<String>,
+    },
     /// Stream versioned JSON snapshots; disconnecting locks the service.
     Watch,
     /// Unlock from a no-echo terminal or explicitly inherited secret descriptor.
@@ -306,6 +314,9 @@ fn main() -> Result<()> {
             let request = match action {
                 ControlAction::Watch => unreachable!(),
                 ControlAction::Status => control::Request::Status {},
+                ControlAction::Credentials { offset, revision } => {
+                    control::Request::Credentials { offset, revision }
+                }
                 ControlAction::Unlock {
                     passphrase_fd,
                     request_token,

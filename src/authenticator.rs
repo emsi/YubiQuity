@@ -103,6 +103,9 @@ impl<S: Store> Authenticator<S> {
     pub fn healthy(&self) -> bool {
         self.store.healthy()
     }
+    pub(crate) fn revision(&self) -> u64 {
+        self.store.revision()
+    }
     pub fn configure_pin(
         &mut self,
         current: &[u8],

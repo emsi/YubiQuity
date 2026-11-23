@@ -79,6 +79,11 @@ bool SnapshotModel::update(const QJsonObject &event, QString &error) {
   }
   sequence = seq;
   state = nextState;
+  credentialsRevision = state == "ready"
+                            ? snapshot.value("credentials_revision").toString()
+                            : QString{};
+  if (credentialsRevision.size() > 128)
+    credentialsRevision.clear();
   wakeSupported = snapshot.value("wake_available").isBool();
   wakeAvailable = snapshot.value("wake_available").toBool();
   unlockRequest = nextUnlock;

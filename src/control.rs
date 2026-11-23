@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-const MAX_WIRE: usize = 8192;
+pub(crate) const MAX_WIRE: usize = 8192;
 const MAX_CLIENTS: usize = 8;
 const CLIENT_LIFETIME: Duration = Duration::from_secs(5);
 pub type RequestId = u64;
@@ -25,6 +25,13 @@ pub const WATCH_VERSION: u32 = 1;
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Status {},
+    /// Explicit metadata listing; never included in background watch traffic.
+    Credentials {
+        #[serde(default)]
+        offset: usize,
+        #[serde(default)]
+        revision: Option<String>,
+    },
     Unlock {
         passphrase: Vec<u8>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,6 +84,10 @@ pub struct Response {
     pub unlock_request: Option<Pending>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake_available: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<crate::credentials::Page>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -97,6 +108,8 @@ impl Response {
             pin_configured: None,
             unlock_request: None,
             wake_available: None,
+            credentials_revision: None,
+            credentials: None,
         }
     }
     pub fn ready(pending: Option<Pending>) -> Self {
@@ -108,6 +121,8 @@ impl Response {
             pin_configured: None,
             unlock_request: None,
             wake_available: None,
+            credentials_revision: None,
+            credentials: None,
         }
     }
     pub fn error(mut self, message: &'static str) -> Self {

@@ -101,6 +101,12 @@ the request. The vault passphrase is only for unlocking YubiQuity; the browser
 uses the separate security-key PIN.
 
 Click the tray icon to open the main window or recall a pending approval.
+Open **Passkeys** to browse stored sites and account names. Unlock the vault if
+needed, search or sort the table, and select a row for its full passkey ID and
+account identifier. Missing names are shown as **Not provided**; sites do not
+always supply them. **Refresh** retries a busy or interrupted listing. The list
+clears when the vault locks, the service disconnects, or the tab/window is hidden.
+
 After the first manual unlock, **Lock** clears vault secrets while keeping the
 device available. A browser security-key request opens an unlock prompt, then
 continues through the normal PIN and approval steps. Cancelling or expiry ends
@@ -166,8 +172,8 @@ On Ubuntu 24.04 amd64, install the development dependencies in the
 
 ```bash
 ./scripts/package-deb.py
-/usr/bin/python3 tests/release_package.py target/release-assets/v0.2.3-rc.1/yubiquity_0.2.3~rc.1-1_amd64.deb
-sudo apt install ./target/release-assets/v0.2.3-rc.1/yubiquity_0.2.3~rc.1-1_amd64.deb
+/usr/bin/python3 tests/release_package.py target/release-assets/v0.2.3-rc.2/yubiquity_0.2.3~rc.2-1_amd64.deb
+sudo apt install ./target/release-assets/v0.2.3-rc.2/yubiquity_0.2.3~rc.2-1_amd64.deb
 ```
 
 The builder compiles both components and creates the `.deb`, checksums and build
@@ -175,8 +181,8 @@ manifest. Build from a clean committed checkout before publishing; the manifest
 records dirty builds. Installed documentation keeps the same `docs/` hierarchy
 so links between the guides work.
 
-This branch builds the `0.2.3-rc.1` test candidate. Its Debian version,
-`0.2.3~rc.1-1`, upgrades `0.2.2-1` and will be superseded by `0.2.3-1`.
+This branch builds the `0.2.3-rc.2` test candidate. Its Debian version,
+`0.2.3~rc.2-1`, upgrades RC1 and `0.2.2-1` and will be superseded by `0.2.3-1`.
 The published download links above continue to identify the stable release.
 
 For development without installing, use `./scripts/desktop.sh run`. This is the

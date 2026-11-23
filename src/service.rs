@@ -42,6 +42,11 @@ struct Work {
 
 enum Job {
     Ctap(Work),
+    Credentials {
+        id: RequestId,
+        offset: usize,
+        revision: Option<String>,
+    },
     Pin {
         id: RequestId,
         current: Zeroizing<Vec<u8>>,
@@ -50,6 +55,10 @@ enum Job {
 }
 
 enum WorkEvent {
+    Credentials {
+        id: RequestId,
+        response: Box<Response>,
+    },
     PinConfigured {
         id: RequestId,
         result: CtapResult<()>,
@@ -149,11 +158,19 @@ struct Worker {
     shutdown: Arc<AtomicBool>,
     invalidation: Arc<AtomicU64>,
     pin_configured: Arc<AtomicBool>,
+    instance: u128,
+    revision: Arc<AtomicU64>,
     join: Option<JoinHandle<()>>,
 }
 
 impl Worker {
-    fn start<S: Store + 'static>(mut authenticator: Authenticator<S>, clock: Instant) -> Self {
+    fn start<S: Store + 'static>(
+        mut authenticator: Authenticator<S>,
+        clock: Instant,
+    ) -> Result<Self> {
+        let instance = random_nonce()?;
+        let revision = Arc::new(AtomicU64::new(authenticator.revision()));
+        let store_revision = revision.clone();
         let (input, receive) = mpsc::sync_channel::<Job>(1);
         let (events, output) = mpsc::sync_channel(8);
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -175,11 +192,38 @@ impl Worker {
                 }
                 let work = match job {
                     Job::Ctap(work) => work,
+                    Job::Credentials {
+                        id,
+                        offset,
+                        revision,
+                    } => {
+                        let response = if authenticator.healthy() {
+                            crate::credentials::page(
+                                authenticator.state(),
+                                format!("{instance:032x}-{}", authenticator.revision()),
+                                offset,
+                                revision.as_deref(),
+                            )
+                        } else {
+                            Response::locked().error("vault is unavailable")
+                        };
+                        if events
+                            .send(WorkEvent::Credentials {
+                                id,
+                                response: Box::new(response),
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
                     Job::Pin { id, current, new } => {
                         let context = LocalContext {
                             shutdown: stop.clone(),
                         };
                         let result = authenticator.configure_pin(&current, &new, &context);
+                        store_revision.store(authenticator.revision(), Ordering::Release);
                         pin_state.store(authenticator.state().pin.is_some(), Ordering::Release);
                         if events
                             .send(WorkEvent::PinConfigured {
@@ -206,6 +250,7 @@ impl Worker {
                     &work.request,
                     &mut context,
                 ));
+                store_revision.store(authenticator.revision(), Ordering::Release);
                 pin_state.store(authenticator.state().pin.is_some(), Ordering::Release);
                 if events
                     .send(WorkEvent::Completed {
@@ -219,14 +264,23 @@ impl Worker {
                 }
             }
         });
-        Self {
+        Ok(Self {
             input: Some(input),
             events: output,
             shutdown,
             invalidation,
             pin_configured,
+            instance,
+            revision,
             join: Some(join),
-        }
+        })
+    }
+    fn credentials_revision(&self) -> String {
+        format!(
+            "{:032x}-{}",
+            self.instance,
+            self.revision.load(Ordering::Acquire)
+        )
     }
 }
 
@@ -326,15 +380,15 @@ fn snapshot(approval: Option<&Approval>) -> Response {
 }
 
 fn request_token(transaction: Transaction) -> Result<String> {
+    Ok(format!("{}-{:032x}", transaction.id, random_nonce()?))
+}
+
+fn random_nonce() -> Result<u128> {
     let mut nonce = [0u8; 16];
     OsRng
         .try_fill_bytes(&mut nonce)
         .map_err(|e| anyhow::anyhow!("request randomness: {e}"))?;
-    Ok(format!(
-        "{}-{:032x}",
-        transaction.id,
-        u128::from_ne_bytes(nonce)
-    ))
+    Ok(u128::from_ne_bytes(nonce))
 }
 
 fn service_snapshot(
@@ -345,6 +399,7 @@ fn service_snapshot(
     if let Some(worker) = worker {
         let mut response = snapshot(approval);
         response.pin_configured = Some(worker.pin_configured.load(Ordering::Acquire));
+        response.credentials_revision = Some(worker.credentials_revision());
         response.wake_available = desktop.map(|d| d.active);
         response
     } else {
@@ -425,6 +480,7 @@ pub fn serve(
                 Request::Approve { .. }
                 | Request::Deny { .. }
                 | Request::ConfigurePin { .. }
+                | Request::Credentials { .. }
                 | Request::Session { .. }
                 | Request::Unlock { .. } => {
                     server.respond(
@@ -485,7 +541,7 @@ fn run_device<S: Store + 'static, D: HidIo>(
     let clock = Instant::now();
     let mut attachment = Attachment {
         device,
-        worker: Some(Worker::start(authenticator, clock)),
+        worker: Some(Worker::start(authenticator, clock)?),
     };
     let device = &mut attachment.device;
     let worker = &mut attachment.worker;
@@ -623,6 +679,12 @@ fn run_device<S: Store + 'static, D: HidIo>(
 
         while let Some(event) = worker.as_ref().and_then(|w| w.events.try_recv().ok()) {
             let emitted = match event {
+                WorkEvent::Credentials { id, response } => {
+                    if let Some((server, _)) = &mut control {
+                        server.respond(id, *response)?;
+                    }
+                    continue;
+                }
                 WorkEvent::PinConfigured { id, result, fatal } => {
                     configuring_pin = false;
                     if let Some((server, _)) = &mut control {
@@ -742,6 +804,33 @@ fn run_device<S: Store + 'static, D: HidIo>(
                     }
                     Request::Status {} => {
                         service_snapshot(worker.as_ref(), approval.as_ref(), desktop.as_ref())
+                    }
+                    Request::Credentials { offset, revision } => {
+                        if worker.is_none() {
+                            service_snapshot(None, None, desktop.as_ref()).error("vault is locked")
+                        } else if active.is_some() || configuring_pin {
+                            service_snapshot(worker.as_ref(), approval.as_ref(), desktop.as_ref())
+                                .error(
+                                "The key is busy. Finish the browser request and refresh the list.",
+                            )
+                        } else if worker
+                            .as_ref()
+                            .unwrap()
+                            .input
+                            .as_ref()
+                            .unwrap()
+                            .try_send(Job::Credentials {
+                                id,
+                                offset: *offset,
+                                revision: revision.clone(),
+                            })
+                            .is_err()
+                        {
+                            service_snapshot(worker.as_ref(), approval.as_ref(), desktop.as_ref())
+                                .error("The key is busy. Refresh the list to try again.")
+                        } else {
+                            continue;
+                        }
                     }
                     Request::ConfigurePin { current, new } => {
                         if worker.is_none() {
@@ -883,7 +972,7 @@ fn run_device<S: Store + 'static, D: HidIo>(
                     && task.token.as_ref().is_none_or(|token| mode.matches(token));
                 let response = match result {
                     Ok(store) if live => {
-                        *worker = Some(Worker::start(Authenticator::software(store, 0), clock));
+                        *worker = Some(Worker::start(Authenticator::software(store, 0), clock)?);
                         if let Some(waiting) = mode.waiting.take() {
                             worker
                                 .as_ref()
@@ -1023,6 +1112,8 @@ mod tests {
                         shutdown: shutdown.clone(),
                         invalidation: Arc::new(AtomicU64::new(0)),
                         pin_configured: Arc::new(AtomicBool::new(false)),
+                        instance: 0,
+                        revision: Arc::new(AtomicU64::new(0)),
                         join: Some(join),
                     }),
                 };
@@ -1137,7 +1228,7 @@ mod tests {
             ]),
         );
         assert_eq!(auth.execute(1, &registration, &mut Approve)[0], 0);
-        let worker = Worker::start(auth, Instant::now());
+        let worker = Worker::start(auth, Instant::now()).unwrap();
         let mut engine = Engine::default();
         engine.receive(
             hid::frame(hid::BROADCAST, hid::INIT, &[0; 8]).unwrap()[0],
@@ -1199,6 +1290,7 @@ mod tests {
                 }
                 WorkEvent::Prompt { .. } => panic!("GetInfo must not prompt"),
                 WorkEvent::PinConfigured { .. } => panic!("no PIN update submitted"),
+                WorkEvent::Credentials { .. } => panic!("no metadata listing submitted"),
             }
         }
     }

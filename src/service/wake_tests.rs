@@ -350,3 +350,58 @@ fn malformed_and_noninteractive_commands_do_not_request_secrets() {
         ));
     }
 }
+
+#[test]
+fn metadata_listing_is_read_only_and_revoked_on_lock() {
+    let f = Fixture::new(true);
+    let initial = f.ctl(Request::Status {}).credentials_revision.unwrap();
+    let list = |revision| {
+        f.ctl(Request::Credentials {
+            offset: 0,
+            revision,
+        })
+    };
+    assert!(list(Some(initial.clone()))
+        .credentials
+        .unwrap()
+        .items
+        .is_empty());
+    f.send(&register());
+    let approval = f.wait(|state| state.pending.is_some()).pending.unwrap();
+    let busy = list(None);
+    assert!(!busy.ok && busy.credentials.is_none());
+    assert!(
+        f.ctl(Request::Approve {
+            token: approval.token
+        })
+        .ok
+    );
+    assert_eq!(f.response()[0], 0);
+    let fresh = f.ctl(Request::Status {}).credentials_revision.unwrap();
+    assert_ne!(initial, fresh);
+    assert!(!list(Some(initial)).ok);
+    let before = std::fs::read(&f.vault).unwrap();
+    let listed = list(Some(fresh.clone()));
+    assert!(listed.ok);
+    let rows = listed.credentials.unwrap().items;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].rp_id, "example.test");
+    assert_eq!(rows[0].name.as_deref(), Some("alice"));
+    assert_eq!(rows[0].user_handle, "01");
+    assert_eq!(rows[0].credential_id.len(), 64);
+    assert!(f.ctl(Request::Status {}).credentials.is_none());
+    assert_eq!(std::fs::read(&f.vault).unwrap(), before);
+    let locked = f.ctl(Request::Lock {});
+    assert!(locked.credentials_revision.is_none() && locked.credentials.is_none());
+    let denied = list(Some(fresh.clone()));
+    assert!(!denied.ok && denied.credentials.is_none());
+    assert!(
+        f.ctl(Request::Unlock {
+            passphrase: SECRET.to_vec(),
+            token: None
+        })
+        .ok
+    );
+    assert!(!list(Some(fresh)).ok); // A new unlock has a new listing generation.
+    assert_eq!(list(None).credentials.unwrap().items.len(), 1);
+}
